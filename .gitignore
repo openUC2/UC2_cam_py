@@ -1,3 +1,20 @@
 build/
 MVS-4.6.3_x86_64_20260205.tar.gz
 note.txt
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+wheelhouse/
+*.so
+
+# Captured images
+snapshot.png
+*.bmp
+*.jpg
+*.jpeg
+*.tif
+*.tiff

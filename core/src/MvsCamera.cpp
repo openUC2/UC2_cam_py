@@ -1,13 +1,48 @@
 #include "MvsCamera.h"
 
+#include <dlfcn.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "MvsError.h"
 
 namespace hik {
 
 namespace {
+
+// Root of the MVS SDK, from the environment or the default install location.
+std::string sdkRoot()
+{
+    const char* sdk = std::getenv("MVCAM_SDK_PATH");
+    return (sdk != nullptr && *sdk != '\0') ? sdk : "/opt/MVS";
+}
+
+// Provide sane defaults for the MVS environment variables when the SDK's
+// set_env_path.sh has not been sourced. setenv() with overwrite=0 respects any
+// value the user already exported. Without ALLUSERSPROFILE the SDK writes its
+// GenICam XML cache to a literal "$(ALLUSERSPROFILE)" directory in the CWD.
+void setupSdkEnvDefaults()
+{
+    std::string base = sdkRoot();
+    setenv("MVCAM_SDK_PATH", base.c_str(), 0);
+    setenv("ALLUSERSPROFILE", (base + "/MVFG").c_str(), 0);
+}
+
+// Preload the SDK renderer so the live display works without LD_LIBRARY_PATH.
+// libMvCameraControl loads its renderer via dlopen("libMVRender.so") (bare
+// soname), which only resolves when the MVS lib dir is on the loader path.
+// Loading it here by absolute path with RTLD_GLOBAL makes the SDK's later
+// dlopen reuse the already-loaded object (matched by SONAME). Best effort:
+// failure just means the preview window is unavailable.
+void preloadRenderLib()
+{
+    std::string sub = (sizeof(void*) == 8) ? "64" : "32";
+    std::string path = sdkRoot() + "/lib/" + sub + "/libMVRender.so";
+    (void)dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+}
 
 // Interpret a fixed-size unsigned char[] field as a trimmed std::string.
 std::string toStr(const unsigned char* buf, size_t maxLen)
@@ -59,12 +94,14 @@ MvsCamera::~MvsCamera()
 
 bool MvsCamera::initSdk()
 {
+    setupSdkEnvDefaults();
     int ret = MV_CC_Initialize();
     if (ret != MV_OK)
     {
         std::fprintf(stderr, "MV_CC_Initialize failed: %s\n", mvsErrorLabel(ret).c_str());
         return false;
     }
+    preloadRenderLib();
     return true;
 }
 

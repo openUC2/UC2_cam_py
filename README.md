@@ -1,7 +1,8 @@
 # HikCamtest
 
-A small C++ terminal test tool for **HikRobot / MVS** industrial cameras
-(GigE Vision and USB3 Vision). It
+A small test tool for **HikRobot / MVS** industrial cameras (GigE Vision and
+USB3 Vision), available both as a **C++ terminal application** and as a
+**Python package** (via pybind11). It
 
 - enumerates the connected cameras,
 - opens one (by index, interactively or via `--index`),
@@ -19,16 +20,23 @@ needed — the SDK draws Mono/Bayer/RGB frames into the window for you.
 
 ```
 HikCamtest/
-├── CMakeLists.txt        # build configuration
-├── include/              # headers
-│   ├── MvsCamera.h       #   camera wrapper (enumerate/open/grab/display/save)
-│   ├── ImageWindow.h     #   minimal X11 preview window (opaque, X11-free API)
-│   └── MvsError.h        #   SDK error-code -> text
-├── src/                  # sources
-│   ├── main.cpp          #   terminal application / argument handling
-│   ├── MvsCamera.cpp
-│   ├── ImageWindow.cpp   #   X11 code, guarded by HAVE_X11
-│   └── MvsError.cpp
+├── core/                     # the C++ library + standalone terminal app
+│   ├── CMakeLists.txt        #   builds hikcamtest_core (lib) and hikcamtest (app)
+│   ├── include/              #   headers
+│   │   ├── CaptureApp.h      #     capture session shared by CLI + Python
+│   │   ├── MvsCamera.h       #     camera wrapper (enumerate/open/grab/display/save)
+│   │   ├── ImageWindow.h     #     minimal X11 preview window (opaque, X11-free API)
+│   │   └── MvsError.h        #     SDK error-code -> text
+│   └── src/                  #   sources (main.cpp is the CLI; the rest is the lib)
+├── bindings/
+│   └── hikcamtest_py.cpp     # pybind11 module (_hikcamtest)
+├── python/hikcamtest/        # the Python package
+│   ├── __init__.py           #   initialises the SDK on import
+│   └── __main__.py           #   `python -m hikcamtest` CLI
+├── tests/test_start.py       # short test program: start HikCamtest from Python
+├── CMakeLists.txt            # top-level build (Python extension) for scikit-build-core
+├── pyproject.toml            # Python packaging (scikit-build-core + pybind11, uv)
+├── .python-version           # pins Python to 3.12
 └── README.md
 ```
 
@@ -37,36 +45,59 @@ HikCamtest/
 - The MVS SDK, installed at `/opt/MVS` (already present on this machine).
   If it ever needs reinstalling, the matching archive
   `MVS-4.6.3_x86_64_20260205.tar.gz` is in this folder.
-- A C++14 compiler, CMake ≥ 3.12, `make`.
-- **For the preview window:** the X11 development headers.
-  The runtime library is already installed; only the `-devel` headers are
-  missing, so install them once:
+- A C++14 compiler, CMake ≥ 3.15, `make`/`ninja`.
+- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
+  (uv installs it automatically from `.python-version`).
+- **For the preview window:** the X11 development headers (already installed
+  here). If they are ever missing, install them once:
 
   ```bash
   sudo dnf install libX11-devel        # Fedora / Nobara
   # or: sudo apt install libx11-dev    # Debian / Ubuntu
   ```
 
-  Without them the project still builds and runs **headless** — it grabs
-  frames and writes a snapshot to disk instead of showing a window.
+  Without them everything still builds and runs **headless** — it grabs frames
+  and writes a snapshot to disk instead of showing a window.
 
-## Build
+## Build & run — Python (uv)
 
 ```bash
-cmake -S . -B build
-cmake --build build -j
+uv sync                              # creates .venv (Python 3.12), builds the extension
+uv run python tests/test_start.py    # short test program: lists cameras and starts a capture
 ```
 
-The resulting binary is `build/hikcamtest`. The MVS library path is baked in
-as an rpath, so you do **not** need to export `LD_LIBRARY_PATH` to run it.
+From Python:
+
+```python
+import hikcamtest
+
+for i, dev in enumerate(hikcamtest.list_devices()):
+    print(i, dev)
+
+# index / frames / snapshot / display are all optional
+hikcamtest.run(index=0, frames=50, snapshot="snapshot.png", display=True)
+```
+
+`uv run python -m hikcamtest --index 0 --frames 100 --snapshot capture.png`
+runs the same thing from the command line. The MVS runtime libraries (including
+the renderer) are located automatically, so you do **not** need to export
+`LD_LIBRARY_PATH`.
+
+## Build & run — C++ standalone (core)
+
+```bash
+cmake -S core -B build/core
+cmake --build build/core -j
+./build/core/hikcamtest              # interactive: list cameras, pick one, live preview
+```
 
 At configure time CMake reports which mode it built:
 
 - `X11 found -> building with live preview window.`
 - `... building HEADLESS (no preview window).` (install `libX11-devel` and
-  re-run `cmake --build build` to switch on the window)
+  rebuild to switch on the window)
 
-## Usage
+Options:
 
 ```
 hikcamtest [options]
@@ -78,17 +109,12 @@ hikcamtest [options]
   -h, --help          Show this help
 ```
 
-Examples:
-
 ```bash
-# Interactive: list cameras, pick one, live preview until you press Enter
-./build/hikcamtest
-
 # Open camera 0, grab 100 frames, save the first as PNG
-./build/hikcamtest --index 0 --frames 100 --snapshot capture.png
+./build/core/hikcamtest --index 0 --frames 100 --snapshot capture.png
 
 # Headless single grab (writes snapshot.png by default when no window)
-./build/hikcamtest --index 0 --frames 1 --no-display
+./build/core/hikcamtest --index 0 --frames 1 --no-display
 ```
 
 When no preview window is available and you did not pass `--snapshot`, the

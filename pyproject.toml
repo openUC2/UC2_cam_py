@@ -1,0 +1,41 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hikcamtest"
+version = "0.1.0"
+description = "Python bindings for the HikCamtest MVS / HikRobot camera test tool"
+readme = "README.md"
+requires-python = "==3.12.*"
+license = { text = "Proprietary" }
+authors = [{ name = "Christian Karras", email = "christian-karras@web.de" }]
+
+[project.scripts]
+# Optional convenience entry point: `hikcamtest` runs the interactive session.
+hikcamtest = "hikcamtest.__main__:main"
+
+[tool.scikit-build]
+# Use the versions declared in build-system.requires for CMake feature checks.
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+# The pure-Python package lives under python/; the compiled _hikcamtest module
+# is installed next to it by CMake (install(TARGETS _hikcamtest DESTINATION hikcamtest)).
+wheel.packages = ["python/hikcamtest"]
+
+[tool.scikit-build.cmake.define]
+# The wheel only needs the extension module, not the standalone CLI binary.
+HIKCAMTEST_BUILD_APP = "OFF"
+
+[tool.uv]
+# Rebuild the extension when the C++/CMake sources change during development.
+# (uv respects this for editable installs.)
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "CMakeLists.txt" },
+    { file = "core/**/*" },
+    { file = "bindings/**/*" },
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
