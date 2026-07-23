@@ -1,0 +1,10 @@
+{
+  "cmake.environment": {
+    "VIRTUAL_ENV": "${workspaceFolder}/.venv",
+    "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}"
+  },
+  "cmake.configureSettings": {
+    "Python_EXECUTABLE": "${workspaceFolder}/.venv/bin/python",
+    "pybind11_DIR": "${workspaceFolder}/.venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11"
+  }
+}

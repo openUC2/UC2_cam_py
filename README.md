@@ -42,11 +42,9 @@ HikCamtest/
 
 ## Requirements
 
-- The MVS SDK, installed at `/opt/MVS` (already present on this machine).
-  If it ever needs reinstalling, the matching archive
-  `MVS-4.6.3_x86_64_20260205.tar.gz` is in this folder.
+- The MVS SDK, commonly installed at `/opt/MVS`.
 - A C++14 compiler, CMake ≥ 3.15, `make`/`ninja`.
-- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
+- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12 or higher
   (uv installs it automatically from `.python-version`).
 - **For the preview window:** the X11 development headers (already installed
   here). If they are ever missing, install them once:
@@ -58,6 +56,30 @@ HikCamtest/
 
   Without them everything still builds and runs **headless** — it grabs frames
   and writes a snapshot to disk instead of showing a window.
+
+## Preparing CMake
+- Initially CMake might fail, due to the absence of pybind11
+- pybind11 should be installed to the .venv when running
+
+```bash
+uv sync
+```
+
+- if you are using vscode, just add the following to the .vscode/settings.json (make sure the paths are correct)
+
+```json
+// .vscode/settings.json
+{
+  "cmake.environment": {
+    "VIRTUAL_ENV": "${workspaceFolder}/.venv",
+    "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}"
+  },
+  "cmake.configureSettings": {
+    "Python_EXECUTABLE": "${workspaceFolder}/.venv/bin/python",
+    "pybind11_DIR": "${workspaceFolder}/.venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11"
+  }
+}
+```
 
 ## Build & run — Python (uv)
 

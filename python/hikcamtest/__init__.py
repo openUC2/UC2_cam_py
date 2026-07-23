@@ -22,6 +22,8 @@ __all__ = [
     "__version__",
 ]
 
+print(f"Imported _hikcamtest from {_hikcamtest.__file__}")
+
 # Initialise the SDK once when the package is imported and make sure it is
 # finalised when the interpreter shuts down. initialize() also preloads the MVS
 # renderer so the live preview works without LD_LIBRARY_PATH being exported.

@@ -8,7 +8,7 @@ import hikcamtest
 
 def main() -> int:
     print(f"hikcamtest {hikcamtest.__version__}")
-
+    print(f"Got file from {hikcamtest.__file__}")
     devices = hikcamtest.list_devices()
     print(f"Found {len(devices)} camera(s):")
     for i, dev in enumerate(devices):
