@@ -1,8 +1,8 @@
 """uc2_hikpy - Python bindings for the MVS/HikRobot camera test tool.
 
 Importing this package initialises the MVS SDK and registers finalisation at
-interpreter exit, so you can call :func:`list_devices`, :func:`run` and build a
-:class:`Grabber` directly.
+interpreter exit, so you can call :func:`list_devices`,
+:func:`run_connection_test` and build a :class:`Grabber` directly.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from ._hik import (
     finalize,
     initialize,
     list_devices,
-    run,
+    run_connection_test,
 )
 from .grabber import Grabber
 
@@ -33,7 +33,7 @@ __all__ = [
     "Roi",
     "Grabber",
     "list_devices",
-    "run",
+    "run_connection_test",
     "initialize",
     "finalize",
     "__version__",

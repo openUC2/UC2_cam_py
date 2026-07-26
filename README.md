@@ -44,6 +44,58 @@ UC2_HIKpy/
 └── README.md
 ```
 
+## Architecture
+
+The package is layered: thin Python management on top, all image handling in C++.
+
+```mermaid
+flowchart TD
+    U["Your Python code"] --> P
+    subgraph P["uc2_hikpy — Python package"]
+        G["Grabber, configure()  ·  grabber.py"]
+        INIT["re-exports  ·  __init__.py"]
+    end
+    P --> EXT
+    subgraph EXT["_hik — pybind11 extension  ·  bindings/hik_py.cpp"]
+        FB["FrameGrabber"]
+        FRM["Frame"]
+        TYPES["DeviceInfo · Roi · AutoMode"]
+        FUNCS["initialize · finalize · list_devices · run_connection_test"]
+    end
+    EXT --> CORE
+    subgraph CORE["hikcam_core — C++ static lib  ·  core/"]
+        MC["MvsCamera (enumerate/open/params/grab)"]
+        CFG["FrameGrabber (callback + latest-frame handoff)"]
+        AUX["CaptureApp · MvsError · ImageWindow"]
+    end
+    CORE --> SDK["MVS SDK — libMvCameraControl  ·  /opt/MVS"]
+    SDK --> CAM([HikRobot / MVS camera])
+```
+
+Frame acquisition is event-driven and zero-copy: the SDK fills its own buffer
+nodes and calls back on a worker thread; Python pulls the latest one with the
+GIL released and receives a numpy view that aliases the SDK buffer.
+
+```mermaid
+sequenceDiagram
+    participant Py as Python (Grabber)
+    participant FG as FrameGrabber (C++)
+    participant CB as SDK callback thread
+    participant Cam as Camera + MVS SDK
+
+    Py->>FG: start()
+    FG->>Cam: SetImageNodeNum · SetGrabStrategy(OneByOne)<br/>RegisterImageCallBackEx2 · StartGrabbing
+    loop while grabbing
+        Cam-->>CB: frame ready (SDK worker thread)
+        CB->>FG: onFrame(): keep latest node, notify
+    end
+    Py->>FG: wait_for_frame(timeout)  (GIL released)
+    FG-->>Py: Frame → frame.array (zero-copy view of SDK buffer)
+    Py->>FG: next wait_for_frame() frees the previous node
+    Py->>FG: stop() / close()
+    FG->>Cam: StopGrabbing · unregister · CloseDevice
+```
+
 ## Requirements
 
 - The MVS SDK, commonly installed at `/opt/MVS`.
@@ -101,14 +153,15 @@ import uc2_hikpy
 for i, dev in enumerate(uc2_hikpy.list_devices()):
     print(i, dev)
 
-# index / frames / snapshot / display are all optional
-uc2_hikpy.run(index=0, frames=50, snapshot="snapshot.png", display=True)
+# Quick connection test (index / frames / snapshot / display are all optional).
+# For real acquisition use Grabber (see below).
+uc2_hikpy.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
 ```
 
 `uv run python -m uc2_hikpy --index 0 --frames 100 --snapshot capture.png`
-runs the same thing from the command line. The MVS runtime libraries (including
-the renderer) are located automatically, so you do **not** need to export
-`LD_LIBRARY_PATH`.
+runs the same connection test from the command line. The MVS runtime libraries
+(including the renderer) are located automatically, so you do **not** need to
+export `LD_LIBRARY_PATH`.
 
 ## Continuous grabbing (Python)
 
@@ -178,6 +231,95 @@ Notes:
   camera's increment grid (width/height step is typically 16).
 - Setting a manual exposure/gain switches the matching auto mode Off so the value
   takes effect; use `set_exposure_auto()` / `set_gain_auto()` for firmware control.
+
+## Python API reference (`_hik` bindings)
+
+Everything below is exposed by the compiled `_hik` module and re-exported from
+`uc2_hikpy`. Units: exposure = µs, gain = dB, frame rate = fps.
+
+**Module-level functions**
+
+| Function | Returns | Description |
+|---|---|---|
+| `initialize()` | `bool` | Initialise the MVS SDK (done automatically on `import uc2_hikpy`). |
+| `finalize()` | `None` | Finalise the SDK (registered at interpreter exit). |
+| `list_devices()` | `list[DeviceInfo]` | Enumerate connected GigE/USB3 cameras. |
+| `run_connection_test(index=-1, frames=0, snapshot="", display=True)` | `int` | Quick connection test: grab a few frames / save a snapshot. `0` ok, `2` no camera, `1` error. |
+
+**`DeviceInfo`** — read-only: `transport`, `model_name`, `serial`, `user_name`, `ip` (all `str`).
+
+**`Frame`** — one grabbed image (zero-copy; valid until the next `wait_for_frame()`):
+
+| Member | Type | Description |
+|---|---|---|
+| `array` | `np.ndarray` | Zero-copy view: `(H, W)` mono or `(H, W, 3)` RGB/BGR `uint8` (else flat bytes). |
+| `copy()` | `np.ndarray` | Independent, owning copy safe to keep. |
+| `width`, `height` | `int` | Frame dimensions. |
+| `pixel_format` | `int` | MvGvspPixelType value. |
+| `frame_num` | `int` | Device frame/sequence number. |
+| `timestamp` | `int` | Host timestamp. |
+| `lost_packets` | `int` | Packets lost for this frame. |
+| `nbytes`, `itemsize` | `int` | Byte length / channel sample size. |
+| `address` | `int` | Buffer address (hand to an external ring). |
+
+**`FrameGrabber`** — continuous grabber (the `Grabber` wrapper adds `configure()`, `frames()` and context-manager support on top of these):
+
+| Method / property | Returns | Description |
+|---|---|---|
+| `open(index)` | `bool` | Enumerate and open device `index`. |
+| `set_node_num(n)` | `None` | SDK buffer-node depth (≥ 3), before `start()`. |
+| `start()` / `stop()` / `close()` | `bool` / `None` / `None` | Begin / end grabbing; close the device. |
+| `wait_for_frame(timeout_ms=1000)` | `Frame \| None` | Block for the latest frame (GIL released). |
+| `is_running`, `frames_received`, `frames_dropped` | `bool`, `int`, `int` | Live status counters. |
+| `payload_size`, `width`, `height`, `pixel_format` | `int` | Current stream geometry. |
+| `set_exposure_time(us)` / `get_exposure_time()` / `get_exposure_time_range()` | `bool` / `float` / `tuple` | Exposure (µs). |
+| `set_gain(db)` / `get_gain()` / `get_gain_range()` | `bool` / `float` / `tuple` | Gain (dB). |
+| `set_frame_rate(fps)` / `get_frame_rate()` / `get_resulting_frame_rate()` / `get_frame_rate_range()` | `bool` / `float` / `float` / `tuple` | Frame rate (fps). |
+| `set_exposure_auto(mode)` / `get_exposure_auto()` | `bool` / `AutoMode` | Auto-exposure mode. |
+| `set_gain_auto(mode)` / `get_gain_auto()` | `bool` / `AutoMode` | Auto-gain mode. |
+| `set_roi(width, height, offset_x=0, offset_y=0)` | `bool` | Set ROI (auto stop/restart; zero-copy preserved). |
+| `get_roi()` / `get_sensor_size()` | `Roi` / `tuple[int, int]` | Current ROI / full sensor size. |
+
+**`Roi`** — read-only: `width`, `height`, `offset_x`, `offset_y` (`int`).
+**`AutoMode`** — enum: `Off`, `Once`, `Continuous`.
+
+## Full example
+
+List devices, start the first camera, read its info, set the exposure, take a
+zero-copy frame, then shut everything down.
+
+```python
+import uc2_hikpy
+from uc2_hikpy import Grabber
+
+# 1. List connected cameras (the SDK is initialised automatically on import).
+devices = uc2_hikpy.list_devices()
+if not devices:
+    raise SystemExit("no HikRobot/MVS camera found")
+
+# 2. Device info.
+info = devices[0]
+print(f"Using {info.model_name}  (SN {info.serial}, {info.transport})")
+
+# 3. Open + start the first device. The context manager opens & starts on entry
+#    and stops & closes on exit (equivalent to cam.start() ... cam.close()).
+with Grabber(index=0, node_num=5) as cam:
+
+    # 4. Set the exposure time (microseconds); auto-exposure is switched Off.
+    cam.set_exposure_time(5000)
+    print("exposure:", cam.get_exposure_time(), "us")
+
+    # 5. Grab the latest frame and access it zero-copy.
+    frame = cam.wait_for_frame(timeout_ms=1000)
+    if frame is not None:
+        img = frame.array               # numpy view: (H, W) or (H, W, 3) uint8
+        print(f"frame #{frame.frame_num}: {img.shape} @ {hex(frame.address)}")
+        # img aliases SDK memory and is valid until the next wait_for_frame();
+        # use frame.copy() if you need to keep it.
+
+# 6. Leaving the 'with' block has stopped grabbing and closed the device;
+#    the SDK is finalised automatically at interpreter exit.
+```
 
 ## Build & run — C++ standalone (core)
 

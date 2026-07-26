@@ -1,7 +1,7 @@
 // pybind11 bindings for the UC2_HIKpy core library.
 //
 // Exposes just enough to drive the tool from Python: initialise/finalise the
-// SDK, list cameras, run a one-shot capture session, and grab frames
+// SDK, list cameras, run a one-shot camera-connection test, and grab frames
 // continuously with a zero-copy view of the latest image. All image handling
 // stays in C++ (core/); this file only marshals arguments, builds numpy views
 // and releases the GIL around blocking calls.
@@ -412,7 +412,7 @@ PYBIND11_MODULE(_hik, m)
              "    tuple[int, int]: (width_max, height_max) in pixels.");
 
     m.def("initialize", &hik::MvsCamera::initSdk,
-          "Initialise the MVS SDK. Call once before list_devices()/run()/FrameGrabber.\n\n"
+          "Initialise the MVS SDK. Call once before list_devices()/FrameGrabber/run_connection_test().\n\n"
           "Returns:\n"
           "    bool: True on success.");
 
@@ -426,7 +426,7 @@ PYBIND11_MODULE(_hik, m)
           "Returns:\n"
           "    list[DeviceInfo]: One entry per detected camera (empty if none).");
 
-    m.def("run",
+    m.def("run_connection_test",
           [](int index, long frames, const std::string& snapshot, bool display) {
               hik::CaptureOptions opts;
               opts.index    = index;
@@ -442,7 +442,9 @@ PYBIND11_MODULE(_hik, m)
           py::arg("frames") = 0,
           py::arg("snapshot") = std::string(),
           py::arg("display") = true,
-          "Run a one-shot interactive capture session.\n\n"
+          "Run a quick camera-connection test: open a device, grab a few frames,\n"
+          "optionally show a preview and save a snapshot. Intended for verifying\n"
+          "that a camera works; use FrameGrabber for real acquisition.\n\n"
           "Args:\n"
           "    index (int): Device index, or -1 to prompt on the terminal (default -1).\n"
           "    frames (int): Stop after N frames, or 0 to run until Enter/window close (default 0).\n"

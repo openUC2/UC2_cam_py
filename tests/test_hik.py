@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import pytest
 import uc2_hikpy
-
+import logging
 
 def test_import_and_version() -> None:
     """The package imports and exposes the expected public API."""
     assert uc2_hikpy.__version__ == "0.1.0"
     assert callable(uc2_hikpy.list_devices)
-    assert callable(uc2_hikpy.run)
+    assert callable(uc2_hikpy.run_connection_test)
     assert uc2_hikpy.__file__  # loaded from an installed location
 
 
@@ -32,32 +32,63 @@ def test_list_devices_returns_list() -> None:
 
 
 @pytest.mark.hardware
-def test_run_capture() -> None:
-    """End-to-end capture on the first device. Skipped without hardware."""
+def test_run_connection_test() -> None:
+    """End-to-end connection test on the first device. Skipped without hardware."""
     devices = uc2_hikpy.list_devices()
     if not devices:
         pytest.skip("no HikRobot/MVS camera connected")
-    rc = uc2_hikpy.run(index=0, frames=10, snapshot="snapshot.png", display=False)
+    rc = uc2_hikpy.run_connection_test(index=0, frames=10, snapshot="snapshot.png", display=False)
     assert rc == 0
 
 
 def main() -> int:
     """Manual smoke run: list cameras and, if any, grab a few frames."""
-    print(f"uc2_hikpy {uc2_hikpy.__version__}")
-    print(f"Got file from {uc2_hikpy.__file__}")
+    log.info(f"uc2_hikpy {uc2_hikpy.__version__}")
+    
+    log.info(f"Got file from {uc2_hikpy.__file__}")
     devices = uc2_hikpy.list_devices()
-    print(f"Found {len(devices)} camera(s):")
+    log.info(f"Found {len(devices)} camera(s):")
     for i, dev in enumerate(devices):
-        print(f"  [{i}] {dev!r}")
+        log.info(f"  [{i}] {dev!r}")
 
     if not devices:
-        print("No cameras connected - nothing to start.")
+        log.info("No cameras connected - nothing to start.")
         return 0
 
     # Grab a few frames, show the preview window (if available) and save the
     # first frame to snapshot.png.
-    return uc2_hikpy.run(index=0, frames=50, snapshot="snapshot.png", display=True)
+    return uc2_hikpy.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
 
+def setLogger() -> None:
+    """Set up logging for the smoke test.
+        This function should just be copied as it is for preparing the logging configuration for later.
+    
+    """
+
+    import logging.config
+    import os;
+    LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+
+    logging.config.dictConfig({
+        "version": 1,
+        "diable_existing_loggers": False, 
+        "formatters": {"std": {"format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s"}},
+        "handlers": {
+            "console": {"class": "logging.StreamHandler", "formatter": "std"},
+            "file": {"class": "logging.handlers.RotatingFileHandler", 
+                     "formatter": "std",
+                     "filename": os.path.join(LOG_DIR, "app.log"), 
+                     "maxBytes": 10_000_000, 
+                     "backupCount": 5},
+        },
+        "root": {"level": "DEBUG", "handlers": ["console", "file"]},
+    })
+    
 
 if __name__ == "__main__":
+    setLogger()
+    log = logging.getLogger(__name__)
+    log.info("Starting uc2_hikpy smoke test...")
     raise SystemExit(main())

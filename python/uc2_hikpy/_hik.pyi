@@ -374,7 +374,7 @@ class FrameGrabber:
         """
 
 def initialize() -> bool:
-    """Initialise the MVS SDK. Call once before list_devices()/run()/FrameGrabber.
+    """Initialise the MVS SDK. Call once before list_devices()/FrameGrabber/run_connection_test().
 
     Returns:
         bool: True on success.
@@ -394,13 +394,17 @@ def list_devices() -> list[DeviceInfo]:
         list[DeviceInfo]: One entry per detected camera (empty if none).
     """
 
-def run(
+def run_connection_test(
     index: int = -1,
     frames: int = 0,
     snapshot: str = "",
     display: bool = True,
 ) -> int:
-    """Run a one-shot interactive capture session.
+    """Run a quick camera-connection test.
+
+    Opens a device, grabs a few frames, optionally shows a preview and saves a
+    snapshot. Intended for verifying that a camera works; use FrameGrabber for
+    real acquisition.
 
     Args:
         index (int): Device index, or -1 to prompt on the terminal (default -1).

@@ -1,6 +1,6 @@
 """Command-line entry point: `python -m uc2_hikpy` or the `uc2_hikpy` script.
 
-Thin argument wrapper around :func:`uc2_hikpy.run`.
+Thin argument wrapper around :func:`uc2_hikpy.run_connection_test`.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import uc2_hikpy
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="uc2_hikpy",
-        description="Grab images from a HikRobot / MVS camera.",
+        description="Run a connection test against a HikRobot / MVS camera.",
     )
     parser.add_argument("-i", "--index", type=int, default=-1,
                         help="device index (default: -1 = prompt)")
@@ -25,7 +25,7 @@ def main() -> int:
                         help="do not open a preview window (headless)")
     args = parser.parse_args()
 
-    return uc2_hikpy.run(
+    return uc2_hikpy.run_connection_test(
         index=args.index,
         frames=args.frames,
         snapshot=args.snapshot,
