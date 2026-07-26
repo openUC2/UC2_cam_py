@@ -10,3 +10,5 @@
     - Implement Ring buffer
 - Connect everything to newswitch
 
+- Review units of exposure time and gain
+    - Gain in dB, Exp time in us?
