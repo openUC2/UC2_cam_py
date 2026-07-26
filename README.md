@@ -406,3 +406,49 @@ and through `FrameGrabber` (and SKIP themselves when no camera is connected).
   and is handy to confirm the camera is reachable independently of this tool.
 - The tool sets `TriggerMode = Off` (free-run). To test hardware triggering,
   extend `MvsCamera::open()` accordingly.
+
+
+# FAQ
+
+## What's the info in "lost_packets"?
+
+lost_packets` isn't an action — it's a **read-only diagnostic counter** attached to each frame. It reports **how many transport packets were lost while that specific frame was being transferred from the camera to the host**.
+
+It comes straight from the SDK's per-frame metadata (`MV_FRAME_OUT_INFO_EX.nLostPacket`), which we surface unchanged:
+- populated in [FrameGrabber.cpp](core/src/FrameGrabber.cpp) — `v.lostPacket = f.stFrameInfo.nLostPacket;`
+- exposed as `Frame.lost_packets` in [hik_py.cpp](bindings/hik_py.cpp)
+
+### What it means practically
+
+A camera image is transmitted in many packets (very much a GigE Vision concept, also relevant on USB3). If some don't arrive, that count is non-zero and **the frame is likely incomplete/corrupted** (missing rows or garbled regions).
+
+- `lost_packets == 0` → the frame arrived intact (the normal case).
+- `lost_packets > 0` → a transfer problem for *that* frame. Common causes: network congestion, marginal cabling, the host not draining fast enough, or (on GigE) a too-small stream packet size / no jumbo frames. Pair it with gaps in `frame_num` to detect dropped frames.
+
+So it's a **health/quality signal you can monitor**, not something that changes behavior. Typical use: log or check it, and if it's consistently non-zero on a GigE camera, increase the stream packet size (jumbo frames / `GevSCPSPacketSize`), improve the link, or lower the frame rate.
+
+For your monochrome USB3 camera (MV-CA023-10UM) you'd normally expect it to stay 0; a persistently rising value would point at a USB bandwidth/cabling issue.
+
+One caveat: it reflects packet loss the SDK is aware of at the transport layer — treat it as an indicator, not a guarantee that a 0 means bit-perfect data.
+
+## Is the frame rate setting a native setting of the HIK Camera?
+
+It's a **native camera setting** — real hardware/firmware frame-rate control, not client-side frame filtering.
+
+`set_frame_rate(fps)` writes the camera's own GenICam nodes ([MvsCamera.cpp](core/src/MvsCamera.cpp)):
+
+```cpp
+setBoolNode("AcquisitionFrameRateEnable", true);   // let firmware regulate the rate
+setFloatNode("AcquisitionFrameRate", fps);         // target rate, timed by the sensor
+```
+
+There is **no software throttling** anywhere in the grabber. The acquisition path is strictly `OneByOne` — every frame the camera produces is delivered; nothing is dropped or sampled to hit a rate. (`frames_dropped` counts only frames superseded because *your consumer* was slow, which is unrelated to rate control.)
+
+### What the camera actually does
+- `AcquisitionFrameRateEnable = true` switches the sensor from free-running at its maximum to **firmware-regulated timing**; it paces exposures/readouts to hit your target. With it `false`, the camera runs as fast as the current exposure/readout allow.
+- `AcquisitionFrameRate` is a **target/upper bound**, hardware-timed — so it's precise and low-jitter, and it genuinely reduces the data the camera sends (less bandwidth/CPU), which software filtering could never do.
+
+### Important caveat: it's bounded by physics
+The requested rate can't exceed what **exposure time + sensor readout + ROI + interface bandwidth** allow. Example: a 50 ms exposure caps you near ~20 fps no matter what you request — ask for 30 and the camera silently regulates to what's achievable.
+
+That's exactly why I also exposed **`get_resulting_frame_rate()`** (the read-only `ResultingFrameRate` node): `get_frame_rate()` returns what you *asked for*, while `get_resulting_frame_rate()` returns what the camera will *actually* deliver given the current exposure/ROI. If they differ, exposure (or bandwidth) is the limiter — lower the exposure to reach a higher rate.
