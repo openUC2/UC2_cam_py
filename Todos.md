@@ -15,4 +15,6 @@
 
 - Test for different plattforms (ARM, IOS)
 
-- Pin reading thread to core
+- Threading
+    - currently "waitForFrame" blocks the caling thread (and hence the python caller!) -> this should be revised -> maybe make it run in thread of the ring buffer later!
+    - Pin reading thread to core
