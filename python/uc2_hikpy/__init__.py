@@ -1,7 +1,8 @@
-"""HikCamtest - Python bindings for the MVS/HikRobot camera test tool.
+"""uc2_hikpy - Python bindings for the MVS/HikRobot camera test tool.
 
 Importing this package initialises the MVS SDK and registers finalisation at
-interpreter exit, so you can call :func:`list_devices` and :func:`run` directly.
+interpreter exit, so you can call :func:`list_devices`, :func:`run` and build a
+:class:`Grabber` directly.
 """
 
 from __future__ import annotations
@@ -9,20 +10,34 @@ from __future__ import annotations
 import atexit
 import warnings
 
-from ._hikcamtest import DeviceInfo, finalize, initialize, list_devices, run
+from ._hik import (
+    AutoMode,
+    DeviceInfo,
+    Frame,
+    FrameGrabber,
+    Roi,
+    finalize,
+    initialize,
+    list_devices,
+    run,
+)
+from .grabber import Grabber
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "AutoMode",
     "DeviceInfo",
+    "Frame",
+    "FrameGrabber",
+    "Roi",
+    "Grabber",
     "list_devices",
     "run",
     "initialize",
     "finalize",
     "__version__",
 ]
-
-print(f"Imported _hikcamtest from {_hikcamtest.__file__}")
 
 # Initialise the SDK once when the package is imported and make sure it is
 # finalised when the interpreter shuts down. initialize() also preloads the MVS

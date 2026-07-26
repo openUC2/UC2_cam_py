@@ -1,6 +1,6 @@
+
+# build files
 build/
-MVS-4.6.3_x86_64_20260205.tar.gz
-note.txt
 
 # Python / uv
 .venv/
@@ -18,3 +18,9 @@ snapshot.png
 *.jpeg
 *.tif
 *.tiff
+
+# HIK related files and folders
+MVS-4.6.3_x86_64_20260205.tar.gz
+note.txt
+HiKCam_Samplesusw/
+

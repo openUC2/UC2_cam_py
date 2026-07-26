@@ -3,29 +3,36 @@ requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "hikcamtest"
+name = "uc2_hikpy"
 version = "0.1.0"
-description = "Python bindings for the HikCamtest MVS / HikRobot camera test tool"
+description = "Python bindings for the MVS / HikRobot camera tool to be used in the UC2 ecosystem."
 readme = "README.md"
 requires-python = "==3.12.*"
 license = { text = "Proprietary" }
 authors = [{ name = "Christian Karras", email = "christian-karras@web.de" }]
+dependencies = ["numpy>=1.21"]
 
 [project.scripts]
-# Optional convenience entry point: `hikcamtest` runs the interactive session.
-hikcamtest = "hikcamtest.__main__:main"
+# Optional convenience entry point: `uc2_hikpy` runs the interactive session.
+uc2_hikpy = "uc2_hikpy.__main__:main"
 
 [tool.scikit-build]
 # Use the versions declared in build-system.requires for CMake feature checks.
 minimum-version = "build-system.requires"
 build-dir = "build/{wheel_tag}"
-# The pure-Python package lives under python/; the compiled _hikcamtest module
-# is installed next to it by CMake (install(TARGETS _hikcamtest DESTINATION hikcamtest)).
-wheel.packages = ["python/hikcamtest"]
+# The pure-Python package lives under python/; the compiled _hik module
+# is installed next to it by CMake (install(TARGETS _hik DESTINATION uc2_hikpy)).
+wheel.packages = ["python/uc2_hikpy"]
 
 [tool.scikit-build.cmake.define]
 # The wheel only needs the extension module, not the standalone CLI binary.
-HIKCAMTEST_BUILD_APP = "OFF"
+HIK_BUILD_APP = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: requires a connected HikRobot/MVS camera",
+]
 
 [tool.uv]
 # Rebuild the extension when the C++/CMake sources change during development.

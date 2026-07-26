@@ -1,6 +1,7 @@
 #ifndef HIKCAMTEST_MVSCAMERA_H
 #define HIKCAMTEST_MVSCAMERA_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,36 @@ enum class SaveFormat
     Png,
     Tiff
 };
+
+/// Auto-regulation mode for exposure and gain. Values match the MVS SDK enums
+/// (MV_EXPOSURE_AUTO_MODE_* / MV_CAM_GAIN_MODE_*).
+enum class AutoMode
+{
+    Off        = 0,   ///< firmware regulation disabled; the manual value is used
+    Once       = 1,   ///< regulate once, then hold
+    Continuous = 2    ///< regulate continuously
+};
+
+/// Region of interest (in pixels) on the sensor.
+struct Roi
+{
+    int64_t width   = 0;   ///< ROI width
+    int64_t height  = 0;   ///< ROI height
+    int64_t offsetX = 0;   ///< horizontal offset from the left sensor edge
+    int64_t offsetY = 0;   ///< vertical offset from the top sensor edge
+};
+
+/// Clamp @p value to [@p min, @p max] and round it down to a multiple of @p inc.
+///
+/// Used to make a requested ROI dimension valid for the camera (which only
+/// accepts values on an increment grid within a min/max range).
+///
+/// @param value requested value.
+/// @param min   minimum accepted value.
+/// @param max   maximum accepted value.
+/// @param inc   increment/step the value must be a multiple of (>= 1).
+/// @return the largest valid value <= the clamped request.
+int64_t alignRoiValue(int64_t value, int64_t min, int64_t max, int64_t inc);
 
 /// Thin RAII wrapper around the HikRobot / MVS "MvCameraControl" C API for a
 /// single area-scan camera: enumerate -> open -> grab -> display/save -> close.
@@ -84,7 +115,98 @@ public:
     bool isGrabbing() const { return m_grabbing; }
     void* handle() const { return m_handle; }
 
+    // --- Camera parameters (require an open device) --------------------------
+    // Exposure time is in microseconds, gain in dB, frame rate in frames/second.
+
+    /// Set the exposure time. Switches ExposureAuto to Off so the value sticks.
+    /// @param microseconds exposure time in microseconds.
+    /// @return true on success.
+    bool setExposureTime(double microseconds);
+    /// Read the current exposure time.
+    /// @param microseconds [out] exposure time in microseconds.
+    /// @return true on success.
+    bool getExposureTime(double& microseconds);
+    /// Read the exposure-time limits.
+    /// @param minUs [out] minimum exposure time in microseconds.
+    /// @param maxUs [out] maximum exposure time in microseconds.
+    /// @return true on success.
+    bool getExposureTimeRange(double& minUs, double& maxUs);
+
+    /// Set the analog gain. Switches GainAuto to Off so the value sticks.
+    /// @param db gain in decibels.
+    /// @return true on success.
+    bool setGain(double db);
+    /// Read the current gain.
+    /// @param db [out] gain in decibels.
+    /// @return true on success.
+    bool getGain(double& db);
+    /// Read the gain limits.
+    /// @param minDb [out] minimum gain in decibels.
+    /// @param maxDb [out] maximum gain in decibels.
+    /// @return true on success.
+    bool getGainRange(double& minDb, double& maxDb);
+
+    /// Enable manual frame-rate control and set the acquisition frame rate.
+    /// @param fps requested frame rate in frames per second.
+    /// @return true on success.
+    bool setFrameRate(double fps);
+    /// Read the configured acquisition frame rate.
+    /// @param fps [out] frame rate in frames per second.
+    /// @return true on success.
+    bool getFrameRate(double& fps);
+    /// Read the resulting (actual) frame rate the camera can achieve.
+    /// @param fps [out] resulting frame rate in frames per second.
+    /// @return true on success (false if the node is unavailable).
+    bool getResultingFrameRate(double& fps);
+    /// Read the acquisition frame-rate limits.
+    /// @param minFps [out] minimum frame rate.
+    /// @param maxFps [out] maximum frame rate.
+    /// @return true on success.
+    bool getFrameRateRange(double& minFps, double& maxFps);
+
+    /// Set the auto-exposure mode.
+    /// @param mode Off, Once or Continuous.
+    /// @return true on success.
+    bool setExposureAuto(AutoMode mode);
+    /// Read the auto-exposure mode.
+    /// @param mode [out] current mode.
+    /// @return true on success.
+    bool getExposureAuto(AutoMode& mode);
+    /// Set the auto-gain mode.
+    /// @param mode Off, Once or Continuous.
+    /// @return true on success.
+    bool setGainAuto(AutoMode mode);
+    /// Read the auto-gain mode.
+    /// @param mode [out] current mode.
+    /// @return true on success.
+    bool getGainAuto(AutoMode& mode);
+
+    /// Set the region of interest. The camera only accepts this while NOT
+    /// grabbing; the requested values are clamped and aligned to the camera's
+    /// increment grid, and written in the order offsets->size->offsets.
+    /// @param roi requested width/height/offsetX/offsetY in pixels.
+    /// @return true on success.
+    bool setRoi(const Roi& roi);
+    /// Read the current region of interest.
+    /// @param out [out] current width/height/offsetX/offsetY.
+    /// @return true on success.
+    bool getRoi(Roi& out);
+    /// Read the full sensor size (WidthMax/HeightMax).
+    /// @param widthMax  [out] maximum ROI width.
+    /// @param heightMax [out] maximum ROI height.
+    /// @return true on success.
+    bool getSensorSize(int64_t& widthMax, int64_t& heightMax);
+
 private:
+    // Generic GenICam node accessors (any out pointer may be null).
+    bool setFloatNode(const char* key, float value);
+    bool getFloatNode(const char* key, float* cur, float* min, float* max);
+    bool setIntNode(const char* key, int64_t value);
+    bool getIntNode(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc);
+    bool setEnumNode(const char* key, unsigned int value);
+    bool getEnumNode(const char* key, unsigned int* cur);
+    bool setBoolNode(const char* key, bool value);
+
     void*                   m_handle;      ///< SDK device handle
     MV_CC_DEVICE_INFO_LIST  m_deviceList;  ///< raw list from last enumeration
     std::vector<DeviceInfo> m_devices;     ///< readable view of m_deviceList

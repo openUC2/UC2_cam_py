@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(HikCamtestCore LANGUAGES CXX)
+project(HikCamCore LANGUAGES CXX)
 
 # When built stand-alone, pick sensible defaults. When added via the top-level
 # project (add_subdirectory) these are already set by the parent.
@@ -12,7 +12,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-option(HIKCAMTEST_BUILD_APP "Build the standalone terminal application" ON)
+option(HIK_BUILD_APP "Build the standalone terminal application" ON)
+option(HIK_BUILD_TESTS "Build the C++ unit tests (Catch2)" OFF)
+option(HIK_ENABLE_HARDWARE_TESTS "Also build C++ tests that need a connected camera" OFF)
 
 # ---------------------------------------------------------------------------
 # Locate the MVS / HikRobot Machine Vision SDK.
@@ -75,21 +77,24 @@ find_package(Threads REQUIRED)
 # Core library: all camera / capture logic, shared by the CLI and the Python
 # binding. Built position-independent so it can be linked into a shared module.
 # ---------------------------------------------------------------------------
-add_library(hikcamtest_core STATIC
+set(HIK_CAM_CORE_TARGET_NAME "hikcam_core")
+
+add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/MvsCamera.cpp
     src/ImageWindow.cpp
     src/MvsError.cpp
-    src/CaptureApp.cpp)
+    src/CaptureApp.cpp
+    src/FrameGrabber.cpp)
 
-set_target_properties(hikcamtest_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # The include dirs and the MVS import lib are part of the public interface so
 # consumers (CLI, Python module) inherit them.
-target_include_directories(hikcamtest_core PUBLIC
+target_include_directories(${HIK_CAM_CORE_TARGET_NAME} PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${MVS_INCLUDE_DIR}")
 
-target_link_libraries(hikcamtest_core PUBLIC
+target_link_libraries(${HIK_CAM_CORE_TARGET_NAME} PUBLIC
     "${MVS_CAMERA_CONTROL_LIB}"
     Threads::Threads
     ${CMAKE_DL_LIBS})
@@ -97,27 +102,36 @@ target_link_libraries(hikcamtest_core PUBLIC
 # X11 is an implementation detail (guarded inside ImageWindow.cpp); the define
 # and headers are private, but the library must be linked by consumers.
 if(X11_FOUND)
-    target_compile_definitions(hikcamtest_core PRIVATE HAVE_X11)
-    target_include_directories(hikcamtest_core PRIVATE "${X11_INCLUDE_DIR}")
-    target_link_libraries(hikcamtest_core PUBLIC ${X11_LIBRARIES})
+    target_compile_definitions(${HIK_CAM_CORE_TARGET_NAME} PRIVATE HAVE_X11)
+    target_include_directories(${HIK_CAM_CORE_TARGET_NAME} PRIVATE "${X11_INCLUDE_DIR}")
+    target_link_libraries(${HIK_CAM_CORE_TARGET_NAME} PUBLIC ${X11_LIBRARIES})
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(hikcamtest_core PRIVATE -Wall -Wextra)
+    target_compile_options(${HIK_CAM_CORE_TARGET_NAME} PRIVATE -Wall -Wextra)
 endif()
 
 # ---------------------------------------------------------------------------
 # Standalone terminal application (optional; skipped during the Python build).
 # ---------------------------------------------------------------------------
-if(HIKCAMTEST_BUILD_APP)
-    add_executable(hikcamtest src/main.cpp)
-    target_link_libraries(hikcamtest PRIVATE hikcamtest_core)
+if(HIK_BUILD_APP)
+    add_executable(HikStandAlone src/HikStandalone.cpp)
+    target_link_libraries(HikStandAlone PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
 
     # Find libMvCameraControl (and its siblings) at runtime without needing
     # MVCAM_COMMON_RUNENV / LD_LIBRARY_PATH to be exported.
-    set_target_properties(hikcamtest PROPERTIES
+    set_target_properties(HikStandAlone PROPERTIES
         BUILD_RPATH   "${MVS_LIB_DIR}"
         INSTALL_RPATH "${MVS_LIB_DIR}")
 
-    install(TARGETS hikcamtest RUNTIME DESTINATION bin)
+    install(TARGETS HikStandAlone RUNTIME DESTINATION bin)
+endif()
+
+# ---------------------------------------------------------------------------
+# C++ unit tests (Catch2 v3). Off by default so wheel builds stay lean;
+# enable with -DHIK_BUILD_TESTS=ON, then run with ctest.
+# ---------------------------------------------------------------------------
+if(HIK_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

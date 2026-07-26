@@ -347,4 +347,350 @@ bool MvsCamera::saveFrame(const MV_FRAME_OUT& frame, const std::string& path, Sa
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Camera parameters
+// ---------------------------------------------------------------------------
+
+int64_t alignRoiValue(int64_t value, int64_t min, int64_t max, int64_t inc)
+{
+    if (inc < 1)
+    {
+        inc = 1;
+    }
+    if (value < min)
+    {
+        value = min;
+    }
+    if (value > max)
+    {
+        value = max;
+    }
+    // Values must lie on the grid min + k*inc; round the request down onto it.
+    return min + ((value - min) / inc) * inc;
+}
+
+// --- Generic GenICam node accessors ----------------------------------------
+
+bool MvsCamera::setFloatNode(const char* key, float value)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    int ret = MV_CC_SetFloatValue(m_handle, key, value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_SetFloatValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool MvsCamera::getFloatNode(const char* key, float* cur, float* min, float* max)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_FLOATVALUE value;
+    std::memset(&value, 0, sizeof(value));
+    int ret = MV_CC_GetFloatValue(m_handle, key, &value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_GetFloatValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.fCurValue; }
+    if (min != nullptr) { *min = value.fMin; }
+    if (max != nullptr) { *max = value.fMax; }
+    return true;
+}
+
+bool MvsCamera::setIntNode(const char* key, int64_t value)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    int ret = MV_CC_SetIntValueEx(m_handle, key, value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_SetIntValueEx(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool MvsCamera::getIntNode(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_INTVALUE_EX value;
+    std::memset(&value, 0, sizeof(value));
+    int ret = MV_CC_GetIntValueEx(m_handle, key, &value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_GetIntValueEx(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.nCurValue; }
+    if (min != nullptr) { *min = value.nMin; }
+    if (max != nullptr) { *max = value.nMax; }
+    if (inc != nullptr) { *inc = value.nInc; }
+    return true;
+}
+
+bool MvsCamera::setEnumNode(const char* key, unsigned int value)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    int ret = MV_CC_SetEnumValue(m_handle, key, value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_SetEnumValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool MvsCamera::getEnumNode(const char* key, unsigned int* cur)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_ENUMVALUE value;
+    std::memset(&value, 0, sizeof(value));
+    int ret = MV_CC_GetEnumValue(m_handle, key, &value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_GetEnumValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.nCurValue; }
+    return true;
+}
+
+bool MvsCamera::setBoolNode(const char* key, bool value)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    int ret = MV_CC_SetBoolValue(m_handle, key, value);
+    if (ret != MV_OK)
+    {
+        std::fprintf(stderr, "MV_CC_SetBoolValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        return false;
+    }
+    return true;
+}
+
+// --- Exposure --------------------------------------------------------------
+
+bool MvsCamera::setExposureTime(double microseconds)
+{
+    setExposureAuto(AutoMode::Off);   // best-effort: manual value only sticks with auto off
+    return setFloatNode("ExposureTime", static_cast<float>(microseconds));
+}
+
+bool MvsCamera::getExposureTime(double& microseconds)
+{
+    float cur = 0.0f;
+    if (!getFloatNode("ExposureTime", &cur, nullptr, nullptr))
+    {
+        return false;
+    }
+    microseconds = cur;
+    return true;
+}
+
+bool MvsCamera::getExposureTimeRange(double& minUs, double& maxUs)
+{
+    float mn = 0.0f, mx = 0.0f;
+    if (!getFloatNode("ExposureTime", nullptr, &mn, &mx))
+    {
+        return false;
+    }
+    minUs = mn;
+    maxUs = mx;
+    return true;
+}
+
+// --- Gain ------------------------------------------------------------------
+
+bool MvsCamera::setGain(double db)
+{
+    setGainAuto(AutoMode::Off);   // best-effort
+    return setFloatNode("Gain", static_cast<float>(db));
+}
+
+bool MvsCamera::getGain(double& db)
+{
+    float cur = 0.0f;
+    if (!getFloatNode("Gain", &cur, nullptr, nullptr))
+    {
+        return false;
+    }
+    db = cur;
+    return true;
+}
+
+bool MvsCamera::getGainRange(double& minDb, double& maxDb)
+{
+    float mn = 0.0f, mx = 0.0f;
+    if (!getFloatNode("Gain", nullptr, &mn, &mx))
+    {
+        return false;
+    }
+    minDb = mn;
+    maxDb = mx;
+    return true;
+}
+
+// --- Frame rate ------------------------------------------------------------
+
+bool MvsCamera::setFrameRate(double fps)
+{
+    setBoolNode("AcquisitionFrameRateEnable", true);   // best-effort
+    return setFloatNode("AcquisitionFrameRate", static_cast<float>(fps));
+}
+
+bool MvsCamera::getFrameRate(double& fps)
+{
+    float cur = 0.0f;
+    if (!getFloatNode("AcquisitionFrameRate", &cur, nullptr, nullptr))
+    {
+        return false;
+    }
+    fps = cur;
+    return true;
+}
+
+bool MvsCamera::getResultingFrameRate(double& fps)
+{
+    float cur = 0.0f;
+    if (!getFloatNode("ResultingFrameRate", &cur, nullptr, nullptr))
+    {
+        return false;
+    }
+    fps = cur;
+    return true;
+}
+
+bool MvsCamera::getFrameRateRange(double& minFps, double& maxFps)
+{
+    float mn = 0.0f, mx = 0.0f;
+    if (!getFloatNode("AcquisitionFrameRate", nullptr, &mn, &mx))
+    {
+        return false;
+    }
+    minFps = mn;
+    maxFps = mx;
+    return true;
+}
+
+// --- Auto modes ------------------------------------------------------------
+
+bool MvsCamera::setExposureAuto(AutoMode mode)
+{
+    return setEnumNode("ExposureAuto", static_cast<unsigned int>(mode));
+}
+
+bool MvsCamera::getExposureAuto(AutoMode& mode)
+{
+    unsigned int cur = 0;
+    if (!getEnumNode("ExposureAuto", &cur))
+    {
+        return false;
+    }
+    mode = static_cast<AutoMode>(cur);
+    return true;
+}
+
+bool MvsCamera::setGainAuto(AutoMode mode)
+{
+    return setEnumNode("GainAuto", static_cast<unsigned int>(mode));
+}
+
+bool MvsCamera::getGainAuto(AutoMode& mode)
+{
+    unsigned int cur = 0;
+    if (!getEnumNode("GainAuto", &cur))
+    {
+        return false;
+    }
+    mode = static_cast<AutoMode>(cur);
+    return true;
+}
+
+// --- Region of interest ----------------------------------------------------
+
+bool MvsCamera::setRoi(const Roi& roi)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+
+    // 1. Zero the offsets so the full width/height range is available.
+    setIntNode("OffsetX", 0);
+    setIntNode("OffsetY", 0);
+
+    // 2. Set the (aligned) size.
+    int64_t cur = 0, mn = 0, mx = 0, inc = 1;
+    if (!getIntNode("Width", &cur, &mn, &mx, &inc) ||
+        !setIntNode("Width", alignRoiValue(roi.width, mn, mx, inc)))
+    {
+        return false;
+    }
+    if (!getIntNode("Height", &cur, &mn, &mx, &inc) ||
+        !setIntNode("Height", alignRoiValue(roi.height, mn, mx, inc)))
+    {
+        return false;
+    }
+
+    // 3. Apply the (aligned) offsets; their max now reflects the new size.
+    if (getIntNode("OffsetX", &cur, &mn, &mx, &inc))
+    {
+        setIntNode("OffsetX", alignRoiValue(roi.offsetX, mn, mx, inc));
+    }
+    if (getIntNode("OffsetY", &cur, &mn, &mx, &inc))
+    {
+        setIntNode("OffsetY", alignRoiValue(roi.offsetY, mn, mx, inc));
+    }
+    return true;
+}
+
+bool MvsCamera::getRoi(Roi& out)
+{
+    int64_t value = 0;
+    if (!getIntNode("Width", &value, nullptr, nullptr, nullptr)) { return false; }
+    out.width = value;
+    if (!getIntNode("Height", &value, nullptr, nullptr, nullptr)) { return false; }
+    out.height = value;
+    if (!getIntNode("OffsetX", &value, nullptr, nullptr, nullptr)) { return false; }
+    out.offsetX = value;
+    if (!getIntNode("OffsetY", &value, nullptr, nullptr, nullptr)) { return false; }
+    out.offsetY = value;
+    return true;
+}
+
+bool MvsCamera::getSensorSize(int64_t& widthMax, int64_t& heightMax)
+{
+    int64_t w = 0, h = 0;
+    if (!getIntNode("WidthMax", &w, nullptr, nullptr, nullptr) ||
+        !getIntNode("HeightMax", &h, nullptr, nullptr, nullptr))
+    {
+        return false;
+    }
+    widthMax = w;
+    heightMax = h;
+    return true;
+}
+
 } // namespace hik
