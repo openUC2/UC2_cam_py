@@ -12,3 +12,7 @@
 
 - Review units of exposure time and gain
     - Gain in dB, Exp time in us?
+
+- Test for different plattforms (ARM, IOS)
+
+- Pin reading thread to core
