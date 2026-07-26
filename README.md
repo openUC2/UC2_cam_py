@@ -2,6 +2,7 @@
 
 An interface in Python for using the HIK Camera in UC2 Projects
 
+## Scope
 
 A small test tool for **HikRobot / MVS** industrial cameras (GigE Vision and
 USB3 Vision), available both as a **C++ terminal application** and as a
@@ -12,7 +13,7 @@ USB3 Vision), available both as a **C++ terminal application** and as a
 - streams frames in continuous (free-run) mode,
 - prints per-frame info (size, length, pixel format) to the terminal,
 - shows the **live image in a simple window** (when built with X11), and
-- saves a **snapshot** to disk.
+- saves a **snapshot** to disk.  (to be depricated!)
 
 It is built directly on the SDK installed at `/opt/MVS`
 (`libMvCameraControl`). The live preview uses the SDK's own renderer
