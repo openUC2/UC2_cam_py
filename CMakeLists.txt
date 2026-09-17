@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.15...3.30)
 project(uc2_hikpy LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Build the reusable C++ core, but not the standalone terminal app: for the
 # Python wheel we only need the library to link into the extension module.
-set(HIK_BUILD_APP OFF CACHE BOOL "" FORCE)
+set(HIK_BUILD_APP ON CACHE BOOL "" FORCE)
 
 # option for building the Python extension module, default ON. The parent project can override this with -DHIK_BUILD_PYTHON=OFF to skip building the extension module
 option(HIK_BUILD_PYTHON "Build the Python extension module" ON)

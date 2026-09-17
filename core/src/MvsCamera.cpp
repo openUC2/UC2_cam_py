@@ -1,10 +1,12 @@
 #include "MvsCamera.h"
-
+#include "hikLog.h"
 #include <dlfcn.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include "MvsError.h"
@@ -41,7 +43,9 @@ void preloadRenderLib()
 {
     std::string sub = (sizeof(void*) == 8) ? "64" : "32";
     std::string path = sdkRoot() + "/lib/" + sub + "/libMVRender.so";
-    (void)dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (h != nullptr) { DBG("Loaded SDK renderer from: " + path); }
+    else              { DBG("SDK renderer unavailable: " + std::string(dlerror()));}
 }
 
 // Interpret a fixed-size unsigned char[] field as a trimmed std::string.
@@ -77,14 +81,92 @@ MV_SAVE_IAMGE_TYPE toSdkFormat(SaveFormat f)
     return MV_Image_Bmp;
 }
 
+// Reference held by initSdk() and released by finalizeSdk(), so callers that
+// use the explicit API keep the SDK alive without owning an MvsCamera.
+std::shared_ptr<MvsSdk> g_explicitSdk;
+
 } // namespace
 
-MvsCamera::MvsCamera()
-    : m_handle(nullptr)
-    , m_deviceList{}
-    , m_grabbing(false)
+// ---------------------------------------------------------------------------
+// Process-wide SDK lifetime
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<MvsSdk> MvsSdk::acquire()
 {
-    std::memset(&m_deviceList, 0, sizeof(m_deviceList));
+    static std::mutex            mtx;
+    static std::weak_ptr<MvsSdk> weak;
+
+    std::lock_guard<std::mutex> lock(mtx);
+    if (std::shared_ptr<MvsSdk> alive = weak.lock())
+    {
+        return alive;
+    }
+
+    DBG("Initializing SDK...");
+    setupSdkEnvDefaults();
+    int ret = MV_CC_Initialize();
+    if (ret != MV_OK)
+    {
+        ERR("MV_CC_Initialize failed: " + mvsErrorLabel(ret));
+        return nullptr;
+    }
+    preloadRenderLib();
+    DBG("SDK initialized successfully.");
+
+    // Not make_shared: the constructor is private.
+    std::shared_ptr<MvsSdk> sdk(new MvsSdk());
+    weak = sdk;
+    return sdk;
+}
+
+MvsSdk::~MvsSdk()
+{
+    DBG("Finalizing SDK.");
+    MV_CC_Finalize();
+}
+
+// ---------------------------------------------------------------------------
+// MvsCamera
+// ---------------------------------------------------------------------------
+
+MvsCamera::MvsCamera()
+    : m_sdk(MvsSdk::acquire())
+{
+    if (!m_sdk)
+    {
+        ERR("MvsCamera: SDK initialisation failed; this camera is unusable");
+    }
+}
+
+// Member order in the class is m_handle, m_sdk, m_grabbing, m_info, m_devices;
+// the init list must follow it (-Wreorder).
+MvsCamera::MvsCamera(MvsCamera&& other) noexcept
+    : m_handle(other.m_handle)          // Handle übernehmen
+    , m_sdk(std::move(other.m_sdk))
+    , m_grabbing(other.m_grabbing)
+    , m_info(std::move(other.m_info))
+    , m_devices(std::move(other.m_devices))
+{
+    other.m_handle   = nullptr;         // Quelle entwaffnen
+    other.m_grabbing = false;
+}
+
+MvsCamera& MvsCamera::operator=(MvsCamera&& other) noexcept
+{
+    if (this != &other)                 // Selbstzuweisung abfangen
+    {
+        close();                        // eigene Ressourcen erst freigeben
+
+        m_sdk      = std::move(other.m_sdk);
+        m_handle   = other.m_handle;
+        m_info     = std::move(other.m_info);
+        m_grabbing = other.m_grabbing;
+        m_devices  = std::move(other.m_devices);
+
+        other.m_handle   = nullptr;
+        other.m_grabbing = false;
+    }
+    return *this;
 }
 
 MvsCamera::~MvsCamera()
@@ -94,44 +176,50 @@ MvsCamera::~MvsCamera()
 
 bool MvsCamera::initSdk()
 {
-    setupSdkEnvDefaults();
-    int ret = MV_CC_Initialize();
-    if (ret != MV_OK)
-    {
-        std::fprintf(stderr, "MV_CC_Initialize failed: %s\n", mvsErrorLabel(ret).c_str());
-        return false;
-    }
-    preloadRenderLib();
-    return true;
+    g_explicitSdk = MvsSdk::acquire();
+    return g_explicitSdk != nullptr;
 }
 
 void MvsCamera::finalizeSdk()
 {
-    MV_CC_Finalize();
+    // Only drops the explicit reference: MV_CC_Finalize() runs once the last
+    // MvsCamera holding the SDK is gone too.
+    g_explicitSdk.reset();
 }
 
 int MvsCamera::enumerateDevices()
 {
-    m_devices.clear();
-    std::memset(&m_deviceList, 0, sizeof(m_deviceList));
-
-    const unsigned int layers = MV_GIGE_DEVICE | MV_USB_DEVICE;
-    int ret = MV_CC_EnumDevices(layers, &m_deviceList);
-    if (ret != MV_OK)
+    if (!m_sdk)
     {
-        std::fprintf(stderr, "MV_CC_EnumDevices failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("enumerateDevices: SDK not initialised");
         return -1;
     }
 
-    for (unsigned int i = 0; i < m_deviceList.nDeviceNum; ++i)
+    m_devices.clear();
+
+    MV_CC_DEVICE_INFO_LIST deviceList;
+    std::memset(&deviceList, 0, sizeof(deviceList));
+
+    const unsigned int layers = MV_GIGE_DEVICE | MV_USB_DEVICE;
+    int ret = MV_CC_EnumDevices(layers, &deviceList);
+    if (ret != MV_OK)
     {
-        MV_CC_DEVICE_INFO* p = m_deviceList.pDeviceInfo[i];
+        ERR("MV_CC_EnumDevices failed: "+ mvsErrorLabel(ret));
+        return -1;
+    }
+    DBG("Found " + std::to_string(deviceList.nDeviceNum) + " devices.");
+    for (unsigned int i = 0; i < deviceList.nDeviceNum; ++i)
+    {
+        MV_CC_DEVICE_INFO* p = deviceList.pDeviceInfo[i];
         if (p == nullptr)
         {
             continue;
         }
 
         DeviceInfo info;
+        // Own copy of the descriptor: deviceList.pDeviceInfo[] points into SDK
+        // memory that the next MV_CC_EnumDevices() call invalidates.
+        info.raw = *p;
         if (p->nTLayerType == MV_GIGE_DEVICE)
         {
             const auto& g = p->SpecialInfo.stGigEInfo;
@@ -163,22 +251,24 @@ bool MvsCamera::open(unsigned int index)
 {
     if (m_handle != nullptr)
     {
-        std::fprintf(stderr, "open: a device is already open\n");
+        ERR("open: a device is already open");
         return false;
     }
-    if (index >= m_deviceList.nDeviceNum)
+    if (index >= m_devices.size())
     {
-        std::fprintf(stderr, "open: index %u out of range (%u devices)\n",
-                     index, m_deviceList.nDeviceNum);
+        ERR("open: index " + std::to_string(index) + " out of range (" +
+            std::to_string(m_devices.size()) + " devices)");
         return false;
     }
 
-    MV_CC_DEVICE_INFO* selected = m_deviceList.pDeviceInfo[index];
+    // MV_CC_CreateHandle() copies the descriptor into its own resources, so the
+    // address only has to stay valid for the duration of the call.
+    MV_CC_DEVICE_INFO* selected = &m_devices[index].raw;
 
     int ret = MV_CC_CreateHandle(&m_handle, selected);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_CreateHandle failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_CreateHandle failed: " + mvsErrorLabel(ret));
         m_handle = nullptr;
         return false;
     }
@@ -186,11 +276,13 @@ bool MvsCamera::open(unsigned int index)
     ret = MV_CC_OpenDevice(m_handle);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_OpenDevice failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_OpenDevice failed: " + mvsErrorLabel(ret));
         MV_CC_DestroyHandle(m_handle);
         m_handle = nullptr;
         return false;
     }
+
+    m_info = m_devices[index];
 
     // For GigE cameras, negotiate the optimal streaming packet size. This is a
     // performance tweak only, so warnings are non-fatal.
@@ -202,14 +294,12 @@ bool MvsCamera::open(unsigned int index)
             ret = MV_CC_SetIntValueEx(m_handle, "GevSCPSPacketSize", packetSize);
             if (ret != MV_OK)
             {
-                std::fprintf(stderr, "Warning: set packet size failed: %s\n",
-                             mvsErrorLabel(ret).c_str());
+                WARN("set packet size failed: " + mvsErrorLabel(ret));
             }
         }
         else
         {
-            std::fprintf(stderr, "Warning: get optimal packet size failed: %s\n",
-                         mvsErrorLabel(packetSize).c_str());
+            WARN("get optimal packet size failed: " + mvsErrorLabel(packetSize));
         }
     }
 
@@ -217,10 +307,11 @@ bool MvsCamera::open(unsigned int index)
     ret = MV_CC_SetEnumValue(m_handle, "TriggerMode", MV_TRIGGER_MODE_OFF);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "Warning: set TriggerMode=off failed: %s\n",
-                     mvsErrorLabel(ret).c_str());
+        WARN("set TriggerMode=off failed: " + mvsErrorLabel(ret));
     }
 
+    DBG("Opened device [" + std::to_string(index) + "]: " + m_info.modelName +
+        " (SN " + m_info.serial + ")");
     return true;
 }
 
@@ -237,6 +328,7 @@ void MvsCamera::close()
     MV_CC_CloseDevice(m_handle);
     MV_CC_DestroyHandle(m_handle);
     m_handle = nullptr;
+    m_info   = DeviceInfo{};
 }
 
 bool MvsCamera::startGrabbing()
@@ -252,7 +344,7 @@ bool MvsCamera::startGrabbing()
     int ret = MV_CC_StartGrabbing(m_handle);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_StartGrabbing failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_StartGrabbing failed: " + mvsErrorLabel(ret));
         return false;
     }
     m_grabbing = true;
@@ -269,7 +361,7 @@ bool MvsCamera::stopGrabbing()
     m_grabbing = false;
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_StopGrabbing failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_StopGrabbing failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -313,7 +405,7 @@ bool MvsCamera::displayFrame(void* windowHandle, const MV_FRAME_OUT& frame)
     int ret = MV_CC_DisplayOneFrameEx2(m_handle, windowHandle, &image, 0);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_DisplayOneFrameEx2 failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_DisplayOneFrameEx2 failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -341,7 +433,7 @@ bool MvsCamera::saveFrame(const MV_FRAME_OUT& frame, const std::string& path, Sa
     int ret = MV_CC_SaveImageToFileEx(m_handle, &param);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SaveImageToFileEx failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_SaveImageToFileEx failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -380,7 +472,7 @@ bool MvsCamera::setFloatNode(const char* key, float value)
     int ret = MV_CC_SetFloatValue(m_handle, key, value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetFloatValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_SetFloatValue(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -397,7 +489,7 @@ bool MvsCamera::getFloatNode(const char* key, float* cur, float* min, float* max
     int ret = MV_CC_GetFloatValue(m_handle, key, &value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_GetFloatValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_GetFloatValue(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     if (cur != nullptr) { *cur = value.fCurValue; }
@@ -415,7 +507,7 @@ bool MvsCamera::setIntNode(const char* key, int64_t value)
     int ret = MV_CC_SetIntValueEx(m_handle, key, value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetIntValueEx(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_SetIntValueEx(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -432,7 +524,7 @@ bool MvsCamera::getIntNode(const char* key, int64_t* cur, int64_t* min, int64_t*
     int ret = MV_CC_GetIntValueEx(m_handle, key, &value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_GetIntValueEx(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_GetIntValueEx(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     if (cur != nullptr) { *cur = value.nCurValue; }
@@ -451,7 +543,7 @@ bool MvsCamera::setEnumNode(const char* key, unsigned int value)
     int ret = MV_CC_SetEnumValue(m_handle, key, value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetEnumValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_SetEnumValue(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;
@@ -468,7 +560,7 @@ bool MvsCamera::getEnumNode(const char* key, unsigned int* cur)
     int ret = MV_CC_GetEnumValue(m_handle, key, &value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_GetEnumValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_GetEnumValue(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     if (cur != nullptr) { *cur = value.nCurValue; }
@@ -484,7 +576,7 @@ bool MvsCamera::setBoolNode(const char* key, bool value)
     int ret = MV_CC_SetBoolValue(m_handle, key, value);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetBoolValue(%s) failed: %s\n", key, mvsErrorLabel(ret).c_str());
+        ERR(std::string("MV_CC_SetBoolValue(") + key + ") failed: " + mvsErrorLabel(ret));
         return false;
     }
     return true;

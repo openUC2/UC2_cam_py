@@ -4,7 +4,7 @@ project(HikCamCore LANGUAGES CXX)
 # When built stand-alone, pick sensible defaults. When added via the top-level
 # project (add_subdirectory) these are already set by the parent.
 if(NOT CMAKE_CXX_STANDARD)
-    set(CMAKE_CXX_STANDARD 14)
+    set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
@@ -84,7 +84,8 @@ add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/ImageWindow.cpp
     src/MvsError.cpp
     src/CaptureApp.cpp
-    src/FrameGrabber.cpp)
+    src/FrameGrabber.cpp
+    src/UC2_RingBuff.cpp)
 
 set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

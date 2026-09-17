@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
-
+#include "hikLog.h"
 #include "CaptureApp.h"
 #include "MvsCamera.h"
 

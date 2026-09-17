@@ -1,5 +1,5 @@
-#ifndef HIKCAMTEST_IMAGEWINDOW_H
-#define HIKCAMTEST_IMAGEWINDOW_H
+#ifndef UC2HIK_IMAGEWINDOW_H
+#define UC2HIK_IMAGEWINDOW_H
 
 #include <string>
 
@@ -50,4 +50,4 @@ private:
 
 } // namespace hik
 
-#endif // HIKCAMTEST_IMAGEWINDOW_H
+#endif // UC2HIK_IMAGEWINDOW_H

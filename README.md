@@ -382,6 +382,51 @@ camera. Add `-DHIK_ENABLE_HARDWARE_TESTS=ON` to also build the `[hardware]`
 integration tests, which open the first device and grab a frame both directly
 and through `FrameGrabber` (and SKIP themselves when no camera is connected).
 
+## Debugging the C++ code from VS Code
+
+`.vscode/launch.json` has two configurations:
+
+| Configuration | Debugger | Breakpoints that work |
+|---|---|---|
+| *Debug test.py* | debugpy | Python only |
+| *Debug C++ (python -m uc2_hikpy)* | gdb (cppdbg) | C++ only |
+
+The C++ one launches `.venv/bin/python -m uc2_hikpy` under gdb, so breakpoints in
+`core/src/*.cpp` and `bindings/hik_py.cpp` are hit through the whole call chain
+(pybind11 → `runCapture()` → `MvsCamera`). A breakpoint stays "unverified" until
+`import uc2_hikpy` loads the extension, then gdb resolves it — that is expected.
+
+**The catch: `cmake --build build` alone is not enough.** Python does not import
+the `_hik*.so` from the build tree. The editable install puts a meta path finder
+at `sys.meta_path[0]` that hard-maps `uc2_hikpy._hik` to a *copy* under
+`.venv/lib/python3.12/site-packages/uc2_hikpy/`, so `PYTHONPATH` cannot redirect
+it either. That copy is built `Release` and **stripped** — gdb finds no symbols
+in it.
+
+Rebuild it as a Debug build instead:
+
+```bash
+SKBUILD_CMAKE_BUILD_TYPE=Debug uv pip install -e . --no-build-isolation
+```
+
+This is what the `uc2_hikpy: Debug-Build (editable reinstall)` task in
+`.vscode/tasks.json` runs, and the C++ configuration invokes it as a
+`preLaunchTask` — so every debug session picks up your latest C++ changes.
+`Debug` also disables stripping on its own (scikit-build-core only strips for
+`Release`/`MinSizeRel`), so no extra flag is needed. Verify with:
+
+```bash
+file .venv/lib/python3.12/site-packages/uc2_hikpy/_hik.cpython-312-*.so
+# want: "with debug_info, not stripped"
+```
+
+To go back to an optimised module, reinstall without the variable:
+`uv pip install -e . --no-build-isolation`.
+
+For problems that do not involve Python at all, debugging
+`build/core/HikStandAlone` directly is simpler — build it with
+`-DCMAKE_BUILD_TYPE=Debug` and point a `cppdbg` launch at the binary.
+
 ## Notes / troubleshooting
 
 - **No cameras found**

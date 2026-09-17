@@ -1,5 +1,5 @@
 #include "FrameGrabber.h"
-
+#include "hikLog.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -103,7 +103,7 @@ bool FrameGrabber::start()
 {
     if (!m_camera.isOpen())
     {
-        std::fprintf(stderr, "FrameGrabber::start: device is not open\n");
+        INFO("FrameGrabber::start: device is not open");
         return false;
     }
     if (m_running.load())
@@ -116,14 +116,14 @@ bool FrameGrabber::start()
     int ret = MV_CC_SetImageNodeNum(handle, m_nodeNum);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetImageNodeNum failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_SetImageNodeNum failed: "+ mvsErrorLabel(ret));
         return false;
     }
 
     ret = MV_CC_SetGrabStrategy(handle, MV_GrabStrategy_OneByOne);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_SetGrabStrategy failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_SetGrabStrategy failed: "+ mvsErrorLabel(ret));
         return false;
     }
 
@@ -131,7 +131,7 @@ bool FrameGrabber::start()
     ret = MV_CC_RegisterImageCallBackEx2(handle, &FrameGrabber::onFrame, this, false);
     if (ret != MV_OK)
     {
-        std::fprintf(stderr, "MV_CC_RegisterImageCallBackEx2 failed: %s\n", mvsErrorLabel(ret).c_str());
+        ERR("MV_CC_RegisterImageCallBackEx2 failed: "+ mvsErrorLabel(ret));
         return false;
     }
 

@@ -1,4 +1,5 @@
 #include "ImageWindow.h"
+#include "hikLog.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -22,9 +23,8 @@ ImageWindow::ImageWindow(unsigned int width, unsigned int height, const std::str
     Display* dpy = XOpenDisplay(nullptr);
     if (dpy == nullptr)
     {
-        std::fprintf(stderr,
-                     "ImageWindow: cannot open X display (no DISPLAY / not in a graphical session).\n"
-                     "             Running without a live preview window.\n");
+        ERR("ImageWindow: cannot open X display (no DISPLAY / not in a graphical session). Running without a live preview window.");
+        
         return;
     }
 

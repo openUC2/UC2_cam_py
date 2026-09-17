@@ -1,7 +1,8 @@
-#ifndef HIKCAMTEST_MVSCAMERA_H
-#define HIKCAMTEST_MVSCAMERA_H
+#ifndef UC2HIK_MVSCAMERA_H
+#define UC2HIK_MVSCAMERA_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@ struct DeviceInfo
     std::string serial;      ///< serial number
     std::string userName;    ///< user-defined name (may be empty)
     std::string ip;          ///< current IP (GigE only, else empty)
+    MV_CC_DEVICE_INFO raw{};     // POD, safe to copy by value
 };
 
 /// Format used when saving a frame to disk.
@@ -58,6 +60,21 @@ struct Roi
 /// @return the largest valid value <= the clamped request.
 int64_t alignRoiValue(int64_t value, int64_t min, int64_t max, int64_t inc);
 
+// Process-wide SDK lifetime, reference counted. MV_CC_Finalize() runs when the
+// last holder is released, so cameras can be created and destroyed freely.
+class MvsSdk
+{
+public:
+    static std::shared_ptr<MvsSdk> acquire();  // MV_CC_Initialize() on first call
+    ~MvsSdk();
+
+    MvsSdk(const MvsSdk&)            = delete;
+    MvsSdk& operator=(const MvsSdk&) = delete;
+
+private:
+    MvsSdk() = default;
+};
+
 /// Thin RAII wrapper around the HikRobot / MVS "MvCameraControl" C API for a
 /// single area-scan camera: enumerate -> open -> grab -> display/save -> close.
 ///
@@ -69,11 +86,19 @@ public:
     MvsCamera();
     ~MvsCamera();
 
+    // move constructors are needed to allow std::vector<MvsCamera> in CaptureApp.
+    // move constructor and move assignment operator are noexcept to allow std::vector<MvsCamera> to be moved without throwing exceptions.
+    MvsCamera(MvsCamera&&) noexcept;
+    MvsCamera& operator=(MvsCamera&&) noexcept;
+
     MvsCamera(const MvsCamera&) = delete;
     MvsCamera& operator=(const MvsCamera&) = delete;
 
-    /// Initialise / finalise the SDK. Call initSdk() once at program start and
-    /// finalizeSdk() once at program end. Returns true on success.
+    /// Initialise / finalise the SDK explicitly. Both are thin wrappers around
+    /// the reference counted MvsSdk: initSdk() takes a reference that is held
+    /// until finalizeSdk() drops it, so init/finalize pairs may be repeated and
+    /// may be nested with live MvsCamera instances (which hold their own
+    /// reference). Returns true on success.
     static bool initSdk();
     static void finalizeSdk();
 
@@ -207,12 +232,13 @@ private:
     bool getEnumNode(const char* key, unsigned int* cur);
     bool setBoolNode(const char* key, bool value);
 
-    void*                   m_handle;      ///< SDK device handle
-    MV_CC_DEVICE_INFO_LIST  m_deviceList;  ///< raw list from last enumeration
-    std::vector<DeviceInfo> m_devices;     ///< readable view of m_deviceList
-    bool                    m_grabbing;
+    void*                   m_handle = nullptr;  ///< SDK device handle
+    std::shared_ptr<MvsSdk> m_sdk;       // keeps the SDK alive while this camera lives
+    bool                    m_grabbing = false;
+    DeviceInfo              m_info;      ///< the currently open device (empty while closed)
+    std::vector<DeviceInfo> m_devices;   ///< result of the last enumeration
 };
 
 } // namespace hik
 
-#endif // HIKCAMTEST_MVSCAMERA_H
+#endif // UC2HIK_MVSCAMERA_H

@@ -1,5 +1,7 @@
-#ifndef HIKCAMTEST_CAPTUREAPP_H
-#define HIKCAMTEST_CAPTUREAPP_H
+#ifndef UC2HIK_CAPTUREAPP_H
+#define UC2HIK_CAPTUREAPP_H
+
+// used to be HIKCAMTEST
 
 #include <string>
 #include <vector>
@@ -31,4 +33,4 @@ int runCapture(const CaptureOptions& opts);
 
 } // namespace hik
 
-#endif // HIKCAMTEST_CAPTUREAPP_H
+#endif // UC2HIK_CAPTUREAPP_H

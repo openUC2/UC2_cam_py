@@ -1,5 +1,5 @@
-#ifndef HIKCAMTEST_MVSERROR_H
-#define HIKCAMTEST_MVSERROR_H
+#ifndef UC2HIK_MVSERROR_H
+#define UC2HIK_MVSERROR_H
 
 #include <string>
 
@@ -14,4 +14,4 @@ std::string mvsErrorLabel(int code);
 
 } // namespace hik
 
-#endif // HIKCAMTEST_MVSERROR_H
+#endif // UC2HIK_MVSERROR_H

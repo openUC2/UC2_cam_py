@@ -26,7 +26,10 @@ set(HIK_TEST_SOURCES
     test_sdk_smoke.cpp
     test_pixelinfo.cpp
     test_framegrabber.cpp
-    test_roi_align.cpp)
+    test_roi_align.cpp
+    test_ringbuffer.cpp
+    test_ringbuffer_stream.cpp
+    test_ringbuffer_mt.cpp)
 
 # Camera-dependent integration tests (opt-in).
 if(HIK_ENABLE_HARDWARE_TESTS)

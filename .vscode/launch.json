@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Debug test.py",
+            "type": "debugpy",
+            "request": "launch",
+            //"program": "${workspaceFolder}/backend/test.py",
+            "program": "${workspaceFolder}/python/uc2_hikpy/__main__.py",
+            // Same working directory as `uv run` uses, so relative paths and .env
+            // lookups behave identically in the debugger.
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            // Runs the same entry point under gdb, so breakpoints in the C++
+            // sources (core/src/*.cpp, bindings/hik_py.cpp) are hit. Python
+            // breakpoints do NOT work here - use "Debug test.py" for those.
+            "name": "Debug C++ (python -m uc2_hikpy)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            // -i 0 skips the interactive device prompt, -n 20 bounds the run.
+            "args": ["-m", "uc2_hikpy", "-i", "0", "-n", "20"],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            // The .so Python imports is a copy in site-packages: rebuilding the
+            // CMake tree alone does not update it, so reinstall before launching.
+            "preLaunchTask": "uc2_hikpy: Debug-Build (editable reinstall)",
+            "setupCommands": [
+                {
+                    "description": "GDB pretty-printing aktivieren",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

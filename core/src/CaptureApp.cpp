@@ -1,5 +1,4 @@
 #include "CaptureApp.h"
-
 #include <atomic>
 #include <cctype>
 #include <cstdio>

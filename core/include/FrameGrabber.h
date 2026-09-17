@@ -1,5 +1,5 @@
-#ifndef HIKCAMTEST_FRAMEGRABBER_H
-#define HIKCAMTEST_FRAMEGRABBER_H
+#ifndef UC2HIK_FRAMEGRABBER_H
+#define UC2HIK_FRAMEGRABBER_H
 
 #include <atomic>
 #include <condition_variable>

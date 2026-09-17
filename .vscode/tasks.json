@@ -1,0 +1,25 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Reinstalls the editable package as a Debug build. Required for C++
+            // debugging: Python loads the .so copy in .venv/.../site-packages/,
+            // and the default Release build strips it of all symbols.
+            // SKBUILD_CMAKE_BUILD_TYPE=Debug gives both -g -O0 and no stripping
+            // (scikit-build-core only strips for Release / MinSizeRel).
+            "label": "uc2_hikpy: Debug-Build (editable reinstall)",
+            "type": "shell",
+            "command": "uv pip install -e . --no-build-isolation",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "SKBUILD_CMAKE_BUILD_TYPE": "Debug"
+                }
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$gcc"
+            ]
+        }
+    ]
+}

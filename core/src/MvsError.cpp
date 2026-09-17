@@ -1,7 +1,8 @@
 #include "MvsError.h"
-
+#include "hikLog.h"
 #include <cstdio>
-
+#include <sstream>   // std::ostringstream
+#include <iomanip>   // std::setw, std::setfill
 #include "MvErrorDefine.h"
 
 namespace hik {
@@ -50,9 +51,11 @@ std::string mvsErrorString(int code)
 
 std::string mvsErrorLabel(int code)
 {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), " (0x%08x)", static_cast<unsigned int>(code));
-    return mvsErrorString(code) + buf;
+    std::ostringstream oss;
+    oss << mvsErrorString(code) << " (0x"
+        << std::hex << std::setw(8) << std::setfill('0')
+        << static_cast<unsigned int>(code) << ")";
+    return oss.str();
 }
 
 } // namespace hik
