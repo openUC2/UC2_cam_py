@@ -12,7 +12,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-option(HIK_BUILD_APP "Build the standalone terminal application" ON)
 option(HIK_BUILD_TESTS "Build the C++ unit tests (Catch2)" OFF)
 option(HIK_ENABLE_HARDWARE_TESTS "Also build C++ tests that need a connected camera" OFF)
 
@@ -110,22 +109,6 @@ endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(${HIK_CAM_CORE_TARGET_NAME} PRIVATE -Wall -Wextra)
-endif()
-
-# ---------------------------------------------------------------------------
-# Standalone terminal application (optional; skipped during the Python build).
-# ---------------------------------------------------------------------------
-if(HIK_BUILD_APP)
-    add_executable(HikStandAlone src/HikStandalone.cpp)
-    target_link_libraries(HikStandAlone PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
-
-    # Find libMvCameraControl (and its siblings) at runtime without needing
-    # MVCAM_COMMON_RUNENV / LD_LIBRARY_PATH to be exported.
-    set_target_properties(HikStandAlone PROPERTIES
-        BUILD_RPATH   "${MVS_LIB_DIR}"
-        INSTALL_RPATH "${MVS_LIB_DIR}")
-
-    install(TARGETS HikStandAlone RUNTIME DESTINATION bin)
 endif()
 
 # ---------------------------------------------------------------------------

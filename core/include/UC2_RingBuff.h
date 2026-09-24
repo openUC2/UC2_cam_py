@@ -142,7 +142,7 @@ struct UC2_SessionHeader
     int64_t  startMonoNs;     ///< monotonic nanoseconds at the same instant
     uint64_t slotStride;      ///< payload stride in bytes (frameBytes, cache-aligned)
     char     cameraId[64];    ///< NUL-terminated camera identifier
-    char     comment[256];    ///< NUL-terminated free-text comment
+    char     comment[8192];   ///< NUL-terminated free-text comment, max. 8191 characters
     uint8_t  reserved2[120];
 };
 
@@ -454,7 +454,7 @@ public:
     bool setChannels(uint32_t channels);                 ///< channels per pixel, >= 1, not limited to 3
     bool setDepth(PixelDepth depth);                     ///< sample type of one channel value
     bool setCameraId(const std::string& id);             ///< truncated to 63 characters
-    bool setComment(const std::string& comment);         ///< truncated to 255 characters
+    bool setComment(const std::string& comment);         ///< truncated to 8191 characters
 
     /// Install a custom memory provider. Must be called before configure();
     /// the default is heapMemoryOps().
@@ -665,7 +665,7 @@ private:
 ///
 /// Layout of `<path>/uc2_<cameraId>_<YYYYmmdd_HHMMSS>.uc2rb`:
 /// @code
-///   [UC2_SessionHeader   512 B]
+///   [UC2_SessionHeader  8448 B]
 ///   [UC2_FrameHeader 64 B][payload]   sequence 0
 ///   [UC2_FrameHeader 64 B][payload]   sequence 1
 ///   ...

@@ -102,8 +102,81 @@ bool ImageWindow::pumpEvents()
         {
             m_closeRequested = true;
         }
+        else if (e.type == Expose && e.xexpose.count == 0)
+        {
+            redraw();
+        }
     }
     return !m_closeRequested;
+}
+
+bool ImageWindow::showGray8(const unsigned char* pixels, unsigned int width, unsigned int height)
+{
+    if (!m_valid || pixels == nullptr || width == 0 || height == 0)
+    {
+        return false;
+    }
+
+    // Only the common 24/32-bit TrueColor layout (0x00RRGGBB) is handled; that
+    // is what every current X server and XWayland hand out by default.
+    Display* dpy    = static_cast<Display*>(m_display);
+    const int scr   = DefaultScreen(dpy);
+    Visual*  visual = DefaultVisual(dpy, scr);
+    const int depth = DefaultDepth(dpy, scr);
+    if (depth < 24 || visual->red_mask != 0xFF0000ul || visual->green_mask != 0x00FF00ul
+        || visual->blue_mask != 0x0000FFul)
+    {
+        if (!m_visualWarned)
+        {
+            ERR("ImageWindow::showGray8: unsupported X visual (depth " + std::to_string(depth)
+                + "), only 24/32-bit TrueColor is handled");
+            m_visualWarned = true;
+        }
+        return false;
+    }
+
+    const size_t n = static_cast<size_t>(width) * height;
+    m_pixels.resize(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        const unsigned int g = pixels[i];
+        m_pixels[i] = (g << 16) | (g << 8) | g;
+    }
+    m_imgWidth  = width;
+    m_imgHeight = height;
+
+    redraw();
+    return true;
+}
+
+void ImageWindow::redraw()
+{
+    if (!m_valid || m_pixels.empty())
+    {
+        return;
+    }
+    Display* dpy  = static_cast<Display*>(m_display);
+    const int scr = DefaultScreen(dpy);
+
+    XImage* img = XCreateImage(dpy, DefaultVisual(dpy, scr), DefaultDepth(dpy, scr), ZPixmap, 0,
+                               reinterpret_cast<char*>(m_pixels.data()),
+                               m_imgWidth, m_imgHeight, 32, 0);
+    if (img == nullptr)
+    {
+        ERR("ImageWindow: XCreateImage failed");
+        return;
+    }
+    // The pixels are host-order 32-bit words; tell Xlib so it swaps if the
+    // server's byte order differs.
+    const uint32_t probe = 1;
+    img->byte_order = (*reinterpret_cast<const unsigned char*>(&probe) == 1) ? LSBFirst : MSBFirst;
+
+    XPutImage(dpy, static_cast<Window>(m_window), DefaultGC(dpy, scr), img,
+              0, 0, 0, 0, m_imgWidth, m_imgHeight);
+    XFlush(dpy);
+
+    img->data = nullptr;   // owned by m_pixels, XDestroyImage must not free() it
+    XDestroyImage(img);
 }
 
 bool ImageWindow::displaySupported()
@@ -132,6 +205,15 @@ void* ImageWindow::nativeHandle() const
 bool ImageWindow::pumpEvents()
 {
     return true;
+}
+
+bool ImageWindow::showGray8(const unsigned char*, unsigned int, unsigned int)
+{
+    return false;
+}
+
+void ImageWindow::redraw()
+{
 }
 
 bool ImageWindow::displaySupported()

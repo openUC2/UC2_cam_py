@@ -28,7 +28,7 @@ namespace hik {
 // two sides touch concurrently is lock-free on all three target ISAs.
 // ---------------------------------------------------------------------------
 
-static_assert(sizeof(UC2_SessionHeader) == 512, "session header must stay 512 bytes");
+static_assert(sizeof(UC2_SessionHeader) == 8448, "session header must stay 8448 bytes");
 static_assert(sizeof(UC2_FrameHeader)   == 64,  "frame header must stay 64 bytes");
 static_assert(sizeof(UC2_SlotRecord)    == 64,  "slot record must stay one cache line");
 static_assert(sizeof(UC2_Consumer)      == 64,  "consumer record must stay one cache line");
@@ -441,7 +441,8 @@ bool RingBuffer::setComment(const std::string& comment)
     }
     if (comment.size() >= sizeof(UC2_SessionHeader::comment))
     {
-        WARN("RingBuffer::setComment: comment truncated to 255 characters");
+        WARN("RingBuffer::setComment: comment truncated to "
+             + std::to_string(sizeof(UC2_SessionHeader::comment) - 1) + " characters");
     }
     m_comment = comment;
     return true;

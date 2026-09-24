@@ -42,4 +42,11 @@ target_link_libraries(hikcam_core_tests PRIVATE
     Catch2::Catch2WithMain)
 
 # Register each Catch2 TEST_CASE with CTest so `ctest` lists them individually.
-catch_discover_tests(hikcam_core_tests)
+#
+# SKIP_RETURN_CODE 4: Catch2 exits with 4 when every test case in the run was
+# skipped. The [hardware] tests do exactly that when no camera is connected
+# (SKIP("no HikRobot/MVS camera connected") in test_capture_hw.cpp). Without
+# this property CTest reads the non-zero exit code as a failure and the suite
+# goes red on any machine without a camera attached.
+catch_discover_tests(hikcam_core_tests
+    PROPERTIES SKIP_RETURN_CODE 4)

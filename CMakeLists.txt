@@ -5,14 +5,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Build the reusable C++ core, but not the standalone terminal app: for the
-# Python wheel we only need the library to link into the extension module.
-set(HIK_BUILD_APP ON CACHE BOOL "" FORCE)
-
 # option for building the Python extension module, default ON. The parent project can override this with -DHIK_BUILD_PYTHON=OFF to skip building the extension module
 option(HIK_BUILD_PYTHON "Build the Python extension module" ON)
+
+# Example programs (Examples/: HikStandAlone CLI, RingBuffExample). ON for the
+# IDE; pyproject.toml switches it OFF so the wheel only carries the module.
+option(HIK_BUILD_EXAMPLES "Build the example programs" ON)
+
+# CTest has to be enabled here, in the top-level directory: CMake only writes a
+# CTestTestfile.cmake into binary directories whose source directory has testing
+# enabled. With enable_testing() living only in core/CMakeLists.txt we would get
+# build/core/CTestTestfile.cmake but not build/CTestTestfile.cmake -- and the
+# latter is the file `ctest --test-dir build` and the VS Code CMake Tools
+# extension look for. Called unconditionally so the file exists even when
+# HIK_BUILD_TESTS is OFF (the test list is then simply empty); the directory
+# property is inherited by every subdirectory.
+enable_testing()
+
 add_subdirectory(core)
 
+if(HIK_BUILD_EXAMPLES)
+    add_subdirectory(Examples)
+endif()
 
 
 ########## Continue with the Python extension module if requested.

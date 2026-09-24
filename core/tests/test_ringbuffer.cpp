@@ -191,11 +191,11 @@ TEST_CASE("over-long metadata is truncated rather than rejected", "[ring]")
 {
     RingBuffer rb(memConfig());
     REQUIRE(rb.setCameraId(std::string(200, 'x')));
-    REQUIRE(rb.setComment(std::string(1000, 'y')));
+    REQUIRE(rb.setComment(std::string(10000, 'y')));
     REQUIRE(configureSmall(rb));
 
     CHECK(rb.cameraId().size() == 63);
-    CHECK(rb.comment().size()  == 255);
+    CHECK(rb.comment().size()  == 8191);
 }
 
 TEST_CASE("the session header is self-describing", "[ring]")

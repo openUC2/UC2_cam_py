@@ -25,8 +25,9 @@ build-dir = "build/{wheel_tag}"
 wheel.packages = ["python/uc2_hikpy"]
 
 [tool.scikit-build.cmake.define]
-# The wheel only needs the extension module, not the standalone CLI binary.
-HIK_BUILD_APP = "OFF"
+# The wheel only needs the extension module, not the example programs
+# (HikStandAlone would otherwise be installed into the wheel's bin/).
+HIK_BUILD_EXAMPLES = "OFF"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

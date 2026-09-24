@@ -20,6 +20,20 @@
             "problemMatcher": [
                 "$gcc"
             ]
+        },
+        {
+            // Builds only the ring-buffer example in the IDE build tree (build/),
+            // with the same configure settings CMake Tools uses for F7.
+            "label": "RingBuffExample: build",
+            "type": "cmake",
+            "command": "build",
+            "targets": [
+                "RingBuffExample"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$gcc"
+            ]
         }
     ]
 }

@@ -38,6 +38,28 @@
                     "ignoreFailures": true
                 }
             ]
+        },
+        {
+            // Runs the ring-buffer example under gdb. No camera needed.
+            // The recording goes to build/recordings, because /data/recordings
+            // needs root to create; drop "args" to use the program's default.
+            "name": "Debug C++ (RingBuffExample)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/Examples/RingBuffExample",
+            "args": ["${workspaceFolder}/build/recordings"],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "preLaunchTask": "RingBuffExample: build",
+            "setupCommands": [
+                {
+                    "description": "GDB pretty-printing aktivieren",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
         }
     ]
 }

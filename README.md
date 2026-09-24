@@ -24,15 +24,18 @@ needed — the SDK draws Mono/Bayer/RGB frames into the window for you.
 
 ```
 UC2_HIKpy/
-├── core/                     # the C++ library + standalone terminal app
-│   ├── CMakeLists.txt        #   builds hikcam_core (lib) and HikStandAlone (app)
+├── core/                     # the C++ library
+│   ├── CMakeLists.txt        #   builds hikcam_core (lib) and the Catch2 tests
 │   ├── include/              #   headers
 │   │   ├── CaptureApp.h      #     capture session shared by CLI + Python
 │   │   ├── MvsCamera.h       #     camera wrapper (enumerate/open/grab/display/save)
 │   │   ├── ImageWindow.h     #     minimal X11 preview window (opaque, X11-free API)
 │   │   └── MvsError.h        #     SDK error-code -> text
-│   ├── src/                  #   sources (HikStandalone.cpp is the CLI; rest is the lib)
+│   ├── src/                  #   library sources
 │   └── tests/                #   C++ unit tests (Catch2; -DHIK_BUILD_TESTS=ON)
+├── Examples/                 # programs built on the core (-DHIK_BUILD_EXAMPLES, default ON)
+│   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
+│   └── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
 ├── bindings/
 │   └── hik_py.cpp            # pybind11 module (_hik)
 ├── python/uc2_hikpy/         # the Python package
@@ -322,13 +325,18 @@ with Grabber(index=0, node_num=5) as cam:
 #    the SDK is finalised automatically at interpreter exit.
 ```
 
-## Build & run — C++ standalone (core)
+## Build & run — C++ standalone (Examples)
+
+The terminal tool lives in `Examples/` and is built by the top-level project.
+`-DHIK_BUILD_PYTHON=OFF` skips the Python module, so no pybind11 is needed:
 
 ```bash
-cmake -S core -B build/core
-cmake --build build/core -j
-./build/core/HikStandAlone           # interactive: list cameras, pick one, live preview
+cmake -S . -B build-cpp -DHIK_BUILD_PYTHON=OFF
+cmake --build build-cpp --target HikStandAlone -j
+./build-cpp/Examples/HikStandAlone   # interactive: list cameras, pick one, live preview
 ```
+
+(The IDE build in `build/` produces the same binary as `build/Examples/HikStandAlone`.)
 
 At configure time CMake reports which mode it built:
 
@@ -350,10 +358,10 @@ HikStandAlone [options]
 
 ```bash
 # Open camera 0, grab 100 frames, save the first as PNG
-./build/core/HikStandAlone --index 0 --frames 100 --snapshot capture.png
+./build-cpp/Examples/HikStandAlone --index 0 --frames 100 --snapshot capture.png
 
 # Headless single grab (writes snapshot.png by default when no window)
-./build/core/HikStandAlone --index 0 --frames 1 --no-display
+./build-cpp/Examples/HikStandAlone --index 0 --frames 1 --no-display
 ```
 
 When no preview window is available and you did not pass `--snapshot`, the
@@ -424,7 +432,7 @@ To go back to an optimised module, reinstall without the variable:
 `uv pip install -e . --no-build-isolation`.
 
 For problems that do not involve Python at all, debugging
-`build/core/HikStandAlone` directly is simpler — build it with
+`build/Examples/HikStandAlone` directly is simpler — build it with
 `-DCMAKE_BUILD_TYPE=Debug` and point a `cppdbg` launch at the binary.
 
 ## Notes / troubleshooting
