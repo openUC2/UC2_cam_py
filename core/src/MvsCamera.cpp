@@ -2,6 +2,7 @@
 #include "hikLog.h"
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -187,7 +188,7 @@ void MvsCamera::finalizeSdk()
     g_explicitSdk.reset();
 }
 
-int MvsCamera::enumerateDevices()
+int MvsCamera::enumerateDevices(unsigned int layers)
 {
     if (!m_sdk)
     {
@@ -200,7 +201,6 @@ int MvsCamera::enumerateDevices()
     MV_CC_DEVICE_INFO_LIST deviceList;
     std::memset(&deviceList, 0, sizeof(deviceList));
 
-    const unsigned int layers = MV_GIGE_DEVICE | MV_USB_DEVICE;
     int ret = MV_CC_EnumDevices(layers, &deviceList);
     if (ret != MV_OK)
     {
@@ -462,6 +462,110 @@ int64_t alignRoiValue(int64_t value, int64_t min, int64_t max, int64_t inc)
 }
 
 // --- Generic GenICam node accessors ----------------------------------------
+
+MV_XML_AccessMode MvsCamera::accessMode(const char* key)
+{
+    if (m_handle == nullptr)
+    {
+        return AM_NI;
+    }
+    MV_XML_AccessMode mode = AM_NI;
+    if (MV_XML_GetNodeAccessMode(m_handle, key, &mode) != MV_OK)
+    {
+        return AM_NI;
+    }
+    return mode;
+}
+
+bool MvsCamera::isWritable(const char* key)
+{
+    const MV_XML_AccessMode mode = accessMode(key);
+    return mode == AM_RW || mode == AM_WO;
+}
+
+MV_XML_InterfaceType MvsCamera::interfaceType(const char* key)
+{
+    MV_XML_InterfaceType type = IFT_IValue;
+    if (m_handle == nullptr || MV_XML_GetNodeInterfaceType(m_handle, key, &type) != MV_OK)
+    {
+        return IFT_IValue;
+    }
+    return type;
+}
+
+bool MvsCamera::tryGetFloat(const char* key, double* cur, double* min, double* max)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_FLOATVALUE value;
+    std::memset(&value, 0, sizeof(value));
+    if (MV_CC_GetFloatValue(m_handle, key, &value) != MV_OK)
+    {
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.fCurValue; }
+    if (min != nullptr) { *min = value.fMin; }
+    if (max != nullptr) { *max = value.fMax; }
+    return true;
+}
+
+bool MvsCamera::tryGetInt(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_INTVALUE_EX value;
+    std::memset(&value, 0, sizeof(value));
+    if (MV_CC_GetIntValueEx(m_handle, key, &value) != MV_OK)
+    {
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.nCurValue; }
+    if (min != nullptr) { *min = value.nMin; }
+    if (max != nullptr) { *max = value.nMax; }
+    if (inc != nullptr) { *inc = value.nInc; }
+    return true;
+}
+
+bool MvsCamera::tryGetEnum(const char* key, unsigned int* cur, std::vector<unsigned int>* supported)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    MVCC_ENUMVALUE value;
+    std::memset(&value, 0, sizeof(value));
+    if (MV_CC_GetEnumValue(m_handle, key, &value) != MV_OK)
+    {
+        return false;
+    }
+    if (cur != nullptr) { *cur = value.nCurValue; }
+    if (supported != nullptr)
+    {
+        supported->assign(value.nSupportValue,
+                          value.nSupportValue + std::min<unsigned int>(value.nSupportedNum,
+                                                                       MV_MAX_XML_SYMBOLIC_NUM));
+    }
+    return true;
+}
+
+bool MvsCamera::tryGetBool(const char* key, bool* cur)
+{
+    if (m_handle == nullptr)
+    {
+        return false;
+    }
+    bool value = false;
+    if (MV_CC_GetBoolValue(m_handle, key, &value) != MV_OK)
+    {
+        return false;
+    }
+    if (cur != nullptr) { *cur = value; }
+    return true;
+}
 
 bool MvsCamera::setFloatNode(const char* key, float value)
 {

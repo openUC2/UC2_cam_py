@@ -7,7 +7,7 @@
             // and the default Release build strips it of all symbols.
             // SKBUILD_CMAKE_BUILD_TYPE=Debug gives both -g -O0 and no stripping
             // (scikit-build-core only strips for Release / MinSizeRel).
-            "label": "uc2_hikpy: Debug-Build (editable reinstall)",
+            "label": "uc2_cam_py: Debug-Build (editable reinstall)",
             "type": "shell",
             "command": "uv pip install -e . --no-build-isolation",
             "options": {
@@ -22,8 +22,8 @@
             ]
         },
         {
-            // Builds only the ring-buffer example in the IDE build tree (build/),
-            // with the same configure settings CMake Tools uses for F7.
+            // Builds only the ring-buffer example in the active preset's build
+            // tree (build/<preset>), exactly like F7 would.
             "label": "RingBuffExample: build",
             "type": "cmake",
             "command": "build",
@@ -34,6 +34,75 @@
             "problemMatcher": [
                 "$gcc"
             ]
+        },
+
+        // -------------------------------------------------------------------
+        // Analysis of the CMake launch target (status bar) of the active
+        // preset via tools/analyze.sh. Reports land in build/reports/.
+        // valgrind modes: use the debug preset; perf/callgrind: profile preset.
+        // See Docs/Tooling.md.
+        // -------------------------------------------------------------------
+        {
+            "label": "analyze: memcheck (valgrind)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh memcheck -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: helgrind (valgrind)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh helgrind -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: drd (valgrind)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh drd -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: callgrind -> kcachegrind",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh callgrind -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: perf -> hotspot",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh perf -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: perf whole system -> hotspot (multi-process)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh perf-system ${input:seconds}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: perf c2c (false sharing)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh c2c -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        },
+        {
+            "label": "analyze: sanitizer run (asan/tsan preset, log per process)",
+            "type": "shell",
+            "command": "${workspaceFolder}/tools/analyze.sh san -- ${command:cmake.launchTargetPath} ${input:programArgs}",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "programArgs",
+            "type": "promptString",
+            "description": "Program arguments (shell syntax; empty for none)",
+            "default": ""
+        },
+        {
+            "id": "seconds",
+            "type": "promptString",
+            "description": "Recording duration in seconds",
+            "default": "10"
         }
     ]
 }

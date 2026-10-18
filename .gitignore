@@ -1,6 +1,13 @@
 
-# build files
+# build files (one tree per CMake preset: build/<preset>, reports in build/reports)
 build/
+CMakeUserPresets.json
+
+# analysis output that lands outside build/ when tools are run by hand
+perf.data*
+callgrind.out.*
+cachegrind.out.*
+vgcore.*
 
 # Python / uv
 .venv/

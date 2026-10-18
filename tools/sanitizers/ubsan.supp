@@ -1,0 +1,2 @@
+# UBSAN suppressions for the HIK C++ code - see Docs/Tooling.md.
+# Only third-party noise and documented, intentional findings belong here.

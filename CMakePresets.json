@@ -1,0 +1,86 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "HIK_BUILD_TESTS": "ON",
+        "HIK_ENABLE_HARDWARE_TESTS": "ON"
+      },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:fast_unwind_on_malloc=0:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/tools/sanitizers/lsan.supp:print_suppressions=0",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1:suppressions=${sourceDir}/tools/sanitizers/ubsan.supp",
+        "TSAN_OPTIONS": "suppressions=${sourceDir}/tools/sanitizers/tsan.supp:second_deadlock_stack=1:print_suppressions=0"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (gdb, valgrind, Python module)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HIK_BUILD_PYTHON": "ON",
+        "Python_EXECUTABLE": "${sourceDir}/.venv/bin/python",
+        "pybind11_DIR": "${sourceDir}/.venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11"
+      },
+      "environment": {
+        "VIRTUAL_ENV": "${sourceDir}/.venv",
+        "PATH": "${sourceDir}/.venv/bin:$penv{PATH}"
+      }
+    },
+    {
+      "name": "profile",
+      "displayName": "Profile (-O2 -g + frame pointers: perf, hotspot, callgrind)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "HIK_BUILD_PYTHON": "OFF",
+        "HIK_PROFILING": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "ASan + UBSan (+ LSan)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HIK_BUILD_PYTHON": "OFF",
+        "HIK_SANITIZERS": "address;undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "TSan (data races)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HIK_BUILD_PYTHON": "OFF",
+        "HIK_SANITIZERS": "thread"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",   "configurePreset": "debug" },
+    { "name": "profile", "configurePreset": "profile" },
+    { "name": "asan",    "configurePreset": "asan" },
+    { "name": "tsan",    "configurePreset": "tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "base-test",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "debug",   "inherits": "base-test", "configurePreset": "debug" },
+    { "name": "profile", "inherits": "base-test", "configurePreset": "profile" },
+    { "name": "asan",    "inherits": "base-test", "configurePreset": "asan" },
+    { "name": "tsan",    "inherits": "base-test", "configurePreset": "tsan" }
+  ]
+}

@@ -1,4 +1,4 @@
-"""Pytest suite for the uc2_hikpy Python bindings.
+"""Pytest suite for the uc2_cam_py Python bindings.
 
 The unit tests here need no camera: importing the package auto-initialises the
 MVS SDK but degrades gracefully (a RuntimeWarning, not a crash) when no device
@@ -14,39 +14,39 @@ The module also stays runnable as a manual smoke script:
 from __future__ import annotations
 
 import pytest
-import uc2_hikpy
+import uc2_cam_py
 import logging
 
 def test_import_and_version() -> None:
     """The package imports and exposes the expected public API."""
-    assert uc2_hikpy.__version__ == "0.1.0"
-    assert callable(uc2_hikpy.list_devices)
-    assert callable(uc2_hikpy.run_connection_test)
-    assert uc2_hikpy.__file__  # loaded from an installed location
+    assert uc2_cam_py.__version__ == "0.2.0"
+    assert callable(uc2_cam_py.list_devices)
+    assert callable(uc2_cam_py.run_connection_test)
+    assert uc2_cam_py.__file__  # loaded from an installed location
 
 
 def test_list_devices_returns_list() -> None:
     """list_devices() always returns a list (empty when no camera is present)."""
-    devices = uc2_hikpy.list_devices()
+    devices = uc2_cam_py.list_devices()
     assert isinstance(devices, list)
 
 
 @pytest.mark.hardware
 def test_run_connection_test() -> None:
     """End-to-end connection test on the first device. Skipped without hardware."""
-    devices = uc2_hikpy.list_devices()
+    devices = uc2_cam_py.list_devices()
     if not devices:
         pytest.skip("no HikRobot/MVS camera connected")
-    rc = uc2_hikpy.run_connection_test(index=0, frames=10, snapshot="snapshot.png", display=False)
+    rc = uc2_cam_py.run_connection_test(index=0, frames=10, snapshot="snapshot.png", display=False)
     assert rc == 0
 
 
 def main() -> int:
     """Manual smoke run: list cameras and, if any, grab a few frames."""
-    log.info(f"uc2_hikpy {uc2_hikpy.__version__}")
+    log.info(f"uc2_cam_py {uc2_cam_py.__version__}")
     
-    log.info(f"Got file from {uc2_hikpy.__file__}")
-    devices = uc2_hikpy.list_devices()
+    log.info(f"Got file from {uc2_cam_py.__file__}")
+    devices = uc2_cam_py.list_devices()
     log.info(f"Found {len(devices)} camera(s):")
     for i, dev in enumerate(devices):
         log.info(f"  [{i}] {dev!r}")
@@ -57,7 +57,7 @@ def main() -> int:
 
     # Grab a few frames, show the preview window (if available) and save the
     # first frame to snapshot.png.
-    return uc2_hikpy.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
+    return uc2_cam_py.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
 
 def setLogger() -> None:
     """Set up logging for the smoke test.
@@ -90,5 +90,5 @@ def setLogger() -> None:
 if __name__ == "__main__":
     setLogger()
     log = logging.getLogger(__name__)
-    log.info("Starting uc2_hikpy smoke test...")
+    log.info("Starting uc2_cam_py smoke test...")
     raise SystemExit(main())

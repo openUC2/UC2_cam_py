@@ -24,9 +24,10 @@ set(HIK_TEST_SOURCES
     test_captureoptions.cpp
     test_imagewindow.cpp
     test_sdk_smoke.cpp
-    test_pixelinfo.cpp
-    test_framegrabber.cpp
     test_roi_align.cpp
+    test_log.cpp
+    test_camera_helpers.cpp
+    test_simcamera.cpp
     test_ringbuffer.cpp
     test_ringbuffer_stream.cpp
     test_ringbuffer_mt.cpp)

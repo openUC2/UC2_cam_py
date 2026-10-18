@@ -1,0 +1,19 @@
+# TSAN suppressions for the HIK C++ code - see Docs/Tooling.md.
+# Only third-party noise and documented, intentional findings belong here.
+
+# MVS SDK: libMvCameraControl and the transport libraries it loads
+# (libMvProducer*, libMVGigEVisionSDK, libMvUsb3vTL, GenICam ...) are not
+# instrumented; their internal worker threads race on libc state
+# (localtime/tzset, strdup'd strings) among themselves. Nothing of ours is
+# involved. The path pattern matches every SDK library, on x86 (lib/64) as
+# well as on ARM (lib/aarch64).
+called_from_lib:libMvCameraControl.so
+race:/MVS/lib/
+
+# Intentional payload race of the ring buffer in FullPolicy::Overwrite
+# (.claude/STATUS.md section 11.1): a reader copies slot bytes while the
+# producer may already be rewriting them, and ReadHandle::stillValid() tells
+# afterwards whether the bytes were consistent. The MT tests provoke exactly
+# this on purpose. Scoped to that test file only - a report anywhere else is
+# a real finding (or a consumer that should check stillValid()/use Wait).
+race:test_ringbuffer_mt.cpp

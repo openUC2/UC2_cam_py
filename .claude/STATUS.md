@@ -1,40 +1,47 @@
-# STATUS — UC2_HIKpy
+# STATUS — UC2_cam_py
 
-**Stand:** 2026-09-23 · Branch `main` · Basis-Commit `20a9c8c` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Ring Buffer (`UC2_RingBuff`) implementiert, getestet, gebaut (§5–§10);
-CTest-Integration in VS Code repariert (§12).
+**Stand:** 2026-10-18 · Branch `main` · Basis-Commit `3dc4ea9` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Paket in `uc2_cam_py` umbenannt; Python-Kamera-Schnittstelle mit
+Ring Buffer, Simulations-Backend und Log-Weiterleitung umgesetzt (§13); Profiling-/Sanitizer-
+Infrastruktur (Docs/Tooling.md).
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
-Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§12 der aktuelle
+Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
 Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ---
 
 ## 1. Projekt und Aufbau
 
-`uc2_hikpy` kapselt das HikRobot-/MVS-Machine-Vision-SDK in einem C++-Core, exponiert es über
-pybind11 nach Python und puffert Frames in einem shared-memory-fähigen Ring Buffer.
+`uc2_cam_py` ist eine herstellerneutrale Python-Kameraschnittstelle (Spezifikation:
+`Docs/UC2_cam_py_interface.md`) auf einem C++-Core: Kameraabstraktion (`CameraBase`, Backends
+HikRobot/MVS und Simulation), shared-memory-fähiger Ring Buffer mit Plattenstreaming, Logging
+mit austauschbarer Senke. Python greift über pybind11 kopierfrei auf die Bilder zu.
 
 ```
 core/include, core/src   C++-Core (namespace hik) — die eigentliche Logik
 bindings/hik_py.cpp      pybind11-Modul `_hik`
-python/uc2_hikpy/        reines Python-Paket (Grabber, __main__, .pyi-Stubs)
+python/uc2_cam_py/       Python-Paket: camera.py (Camera, create_camera), data.py (ImgData,
+                         ImgMetaData), hikrobot.py/simulated.py, preview.py, defaults.py,
+                         _logging.py (Log-Forwarder), _resources.py, _hik.pyi
 core/tests/              Catch2-v3-Tests
 tests/                   pytest-Tests
 Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, braucht Kamera),
                          RingBuffExample.cpp (ohne Kamera); nur Top-Level-Build, HIK_BUILD_EXAMPLES
-Docs/                    Referenzdokumentation (RingBuff_REF.md)
+Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
+CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
+core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING
+tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind
 .claude/STATUS.md        dieses Dokument
 ```
 
 Schichtung — nicht kurzschließen:
 
 ```
-Examples/HikStandalone.cpp ─┐
-                            ├─→ CaptureApp ─→ MvsCamera ─→ MVS-SDK
-bindings/hik_py ────────────┴─→ FrameGrabber ──┘
-       ↑                             │
-python/uc2_hikpy                     └─→ RingBuffer (UC2_RingBuff) — noch nicht verdrahtet
+python/uc2_cam_py (Camera) ─→ bindings/hik_py (_hik) ─→ CameraBase ─┬─→ HikCamera ─→ MvsCamera ─→ MVS-SDK
+                                                                    ├─→ SimCamera
+                                                                    └─→ RingBuffer + FileStreamSink
+Examples/HikStandalone.cpp ─→ CaptureApp ─→ MvsCamera   (Diagnose; auch run_connection_test)
 ```
 
 ---
@@ -47,7 +54,8 @@ python/uc2_hikpy                     └─→ RingBuffer (UC2_RingBuff) — noc
 - Doxygen `///` an der gesamten öffentlichen API. Kommentardichte der Umgebung treffen —
   dieser Code dokumentiert das *Warum*, nicht das *Was*.
 - **Jede Diagnoseausgabe geht über `core/include/hikLog.h`** (`hik::ERR/WARN/INFO/DBG`),
-  niemals `printf`/`cout`/`cerr`. Ausnahme ist echte Programmausgabe in `CaptureApp.cpp` und
+  niemals `printf`/`cout`/`cerr`. Die Senke ist austauschbar (`setLogSink`); Standard ist
+  stderr, im Python-Modul eine Queue, die ein Python-Thread an `logging` weitergibt. Ausnahme ist echte Programmausgabe in `CaptureApp.cpp` und
   `HikStandalone.cpp` (Frame-Zeilen, Gerätelisten) — die gehört bewusst auf stdout.
 - Alles muss unter `-Wall -Wextra` warnungsfrei übersetzen. Das ist der Normalzustand,
   kein Ziel.
@@ -57,13 +65,14 @@ python/uc2_hikpy                     └─→ RingBuffer (UC2_RingBuff) — noc
 
 ## 3. Fallstricke
 
-Vier Dinge, die beim ersten Kontakt mit dem Code überraschen. Details jeweils im
+Dinge, die beim ersten Kontakt mit dem Code überraschen. Details jeweils im
 angegebenen Abschnitt:
 
 | Fallstrick | Details |
 |---|---|
-| **Zero-Copy-Lebensdauer.** `bindings/hik_py.cpp` gibt numpy eine View auf einen SDK-eigenen Puffer mit No-Op-Capsule. Das Array wird beim nächsten `wait_for_frame()`/`stop()`/`close()`/`set_roi()` still ungültig. Ungelöst. | §11.3 (P1) |
-| **Der Payload-Datenwettlauf im Ring Buffer ist Absicht.** Im `FullPolicy::Overwrite` kann ein Consumer Bytes lesen, die der Producer gerade überschreibt; `ReadHandle::stillValid()` ist der Weg, das zu erfahren. TSan und helgrind melden es. `FullPolicy::Wait` vermeidet es ganz. | §11.1 |
+| **ROI/Binning während der Aufnahme starten die Session neu.** Der Ring Buffer friert seine Geometrie ein; `CameraBase` stoppt, ändert, startet neu → neuer Ring, neue `.uc2rb`-Datei. Jeder `start()` legt ohnehin einen neuen Ring an. | §13 |
+| **Catch2 definiert `INFO`/`WARN` als Makros.** In Tests `hikLog.h` vor Catch2 einbinden und `(hik::INFO)(...)` schreiben, sonst zerlegt der Präprozessor Definition bzw. Aufruf. | `core/tests/test_log.cpp` |
+| **Der Payload-Datenwettlauf im Ring Buffer ist Absicht.** Im `FullPolicy::Overwrite` kann ein Consumer Bytes lesen, die der Producer gerade überschreibt; `ReadHandle::stillValid()` ist der Weg, das zu erfahren. TSan, helgrind und drd melden es; für die MT-Tests ist es in `tools/sanitizers/tsan.supp` bzw. `tools/valgrind/hik.supp` gezielt unterdrückt (Docs/Tooling.md §5). `FullPolicy::Wait` vermeidet es ganz. | §11.1 |
 | **Der Speicherblock des Ring Buffers muss zeigerfrei, vtable-frei und POD bleiben** — das ist es, was den geplanten Multi-Prozess-Schritt billig hält. `static_assert`s in `UC2_RingBuff.cpp` sichern das ab. | §7.1 |
 
 ---
@@ -73,38 +82,46 @@ angegebenen Abschnitt:
 Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 
 ```bash
-# Top-Level — das, was die IDE benutzt; baut Core, CLI und Python-Modul.
-# Die beiden Test-Optionen stehen für die IDE in .vscode/settings.json.
-cmake -S . -B build -DHIK_BUILD_TESTS=ON -DHIK_ENABLE_HARDWARE_TESTS=ON
-cmake --build build -j8
-ctest --test-dir build            # 78 Tests
+# Top-Level über CMakePresets.json — das, was die IDE benutzt (cmake.useCMakePresets=always).
+# Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
+# profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
+cmake --preset debug && cmake --build --preset debug
+ctest --preset debug              # 78 Tests; ebenso --preset asan / tsan / profile
 
-# Nur der Core, ohne Python-Modul — schnellere Iteration auf der C++-Seite.
-# Baut Bibliothek + Tests, aber keine Programme (die liegen in Examples/, nur Top-Level).
-cmake -S core -B build/core -DHIK_BUILD_TESTS=ON
+# Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
+# Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
+cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
 ctest --test-dir build/core       # 75 Tests (ohne [hardware])
+
+# Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 
 # Python-Paket (editable). Nach C++-Änderungen nötig: Python importiert eine *Kopie*
 # der .so in site-packages, ein reiner CMake-Rebuild reicht nicht.
 uv pip install -e . --no-build-isolation
-.venv/bin/python -m pytest tests -q -m "not hardware"
+.venv/bin/python -m pytest tests -q -m "not hardware"    # 134 Tests, Sim-Backend, ~12 s
+.venv/bin/python -m pytest tests -q -m hardware          # dieselben Fälle an der HikRobot-Kamera
+UC2_DISPLAY_SECONDS=30 .venv/bin/python -m pytest -m display   # Live-Anzeige (get_last_image)
 
 # Manueller Ring-Buffer-Test ohne Kamera (nur Top-Level-Build): 20 simulierte Mono16-Frames,
 # Analyse- und Anzeige-Thread, Disk-Streaming. Endet, wenn das Vorschaufenster geschlossen wird.
-./build/Examples/RingBuffExample [storageDir]      # Default /data/recordings
+./build/debug/Examples/RingBuffExample [storageDir]   # Default /data/recordings
 ```
 
 Einzelne Catch2-Gruppen direkt aus der Testbinary:
 
 ```bash
-./build/core/tests/hikcam_core_tests "[ring]"      # Ring Buffer
-./build/core/tests/hikcam_core_tests "[mt]"        # Nebenläufigkeit
-./build/core/tests/hikcam_core_tests "[stream]"    # Plattenformat
+./build/debug/core/tests/hikcam_core_tests "[ring]"      # Ring Buffer
+./build/debug/core/tests/hikcam_core_tests "[mt]"        # Nebenläufigkeit
+./build/debug/core/tests/hikcam_core_tests "[stream]"    # Plattenformat
 ```
 
-Tags: `[ring]` `[policy]` `[seqlock]` `[vtable]` `[stream]` `[mt]` `[time]` `[grabber]`
-`[pixel]` `[roi]` `[error]` `[options]` `[window]` `[sdk]` `[hardware]`.
+Tags: `[ring]` `[policy]` `[seqlock]` `[vtable]` `[stream]` `[mt]` `[time]` `[camera]`
+`[sim]` `[log]` `[pixel]` `[roi]` `[error]` `[options]` `[window]` `[sdk]` `[hardware]`.
+
+pytest-Marker: `hardware` (echte Kamera, sonst übersprungen), `display` (Vorschaufenster,
+ohne DISPLAY/WAYLAND_DISPLAY übersprungen). Die Fixture `camera` in `tests/conftest.py` läuft
+parametrisiert für `Simulated` und `HikRobot`.
 
 **Ohne das MVS-SDK lässt sich nicht einmal konfigurieren.** Default `/opt/MVS`; überschreibbar
 mit `-DMVS_ROOT=/pfad` oder der Umgebungsvariablen `MVCAM_SDK_PATH`. CMake bricht hart ab,
@@ -332,20 +349,15 @@ registrieren.
 
 ### 11.2 Nächste Schritte am Ring Buffer
 
-1. **pybind11-Anbindung** — `readLatest`/`readSlot` als numpy-Views. Achtung: das ist
-   genau die Stelle, an der der P1-Befund (siehe §11.3) entschieden werden muss. Der Ring
-   Buffer liefert jetzt die Grundlage dafür: über `ReadHandle::stillValid()` lässt sich
-   ein Generationszähler ohne Zusatzaufwand bauen.
+1. ~~**pybind11-Anbindung**~~ — **erledigt 2026-10-18** (§13): `ImageHandle` hält Slot + Ring.
 2. **PyCapsule-Hook** — `UC2_SinkOps` ist dafür fertig; `destroy` ist die Stelle für den
    Capsule-Destruktor. Noch keine Implementierung vorhanden.
-3. **Verdrahtung mit `FrameGrabber`** — `waitForFrame()` → `beginWrite`/`memcpy`/`commitWrite`.
-   Löst nebenbei den Todo „waitForFrame blockiert den Python-Aufrufer".
+3. ~~**Verdrahtung mit der Kamera**~~ — **erledigt 2026-10-18** (§13): `CameraBase::deliverFrame`;
+   `FrameGrabber` entfällt.
 4. **Multi-Prozess** — `shm_open`+`mmap`-Implementierung von `UC2_MemoryOps`, plus Umstieg
    der Condvar auf `PTHREAD_PROCESS_SHARED`. Zusätzlich zu klären: Namensvergabe der
    Segmente und Aufräumen nach Absturz.
-5. **README** — Zeile ~171 sagt noch „**no ring buffer here** — an indexable history is
-   provided by a separate external component". Das ist jetzt `UC2_RingBuff` und sollte
-   dort verlinkt werden.
+5. ~~**README**~~ — **erledigt 2026-10-18**.
 6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die `static_assert`s auf
    `is_always_lock_free` würden dort sofort anschlagen, falls etwas nicht passt.
 
@@ -356,13 +368,13 @@ CTest-Punkt sind dessen Befunde **unverändert offen** — am Altcode wurde nich
 
 | Prio | Befund | Bemerkung |
 |---|---|---|
-| **P1** | Zero-Copy-Lebensdauer in `bindings/hik_py.cpp:77` — numpy-Array mit No-Op-Capsule, wird beim nächsten `wait_for_frame()`/`stop()`/`set_roi()` ungültig | vor der pybind11-Anbindung des Ring Buffers zu entscheiden |
+| ~~P1~~ | ~~Zero-Copy-Lebensdauer (numpy-Array mit No-Op-Capsule)~~ | **erledigt 2026-10-18**: View-Basis ist ein `ImageHandle`, das Slot und `shared_ptr<RingBuffer>` hält |
 | **P2** | `CaptureApp.cpp:158-163` — `getchar()`-Thread hängt ohne Terminal-stdin dauerhaft, bei freigegebenem GIL | trifft `run_connection_test(frames=0)` |
 | **P2** | `ImageWindow.cpp:49-57` — `XNextEvent` ohne Timeout, Konstruktor kann endlos hängen | Headless-Fallback greift hier nicht |
-| **P3** | `FrameGrabber.cpp:266-268` — `setRoi()` verwirft den Rückgabewert von `start()` | Einzeiler: `return ok && (!wasRunning || start());` |
+| ~~P3~~ | ~~`FrameGrabber::setRoi()` verwirft den Rückgabewert von `start()`~~ | **entfällt 2026-10-18**: `FrameGrabber` entfernt; `CameraBase::changeGeometry` meldet den Neustart korrekt |
 | ~~P3~~ | ~~Root-`CMakeLists.txt` ruft kein `enable_testing()`~~ | **erledigt 2026-09-23**, siehe §12 |
-| **P4** | `CaptureApp.cpp`: 4× `fprintf(stderr,…)` noch nicht auf `ERR()`/`WARN()` umgestellt | Voraussetzung für die Python-`logging`-Anbindung |
-| **P4** | `FrameGrabber.h`: `#endif`-Kommentar noch `HIKCAMTEST_FRAMEGRABBER_H` | kosmetisch |
+| ~~P4~~ | ~~`CaptureApp.cpp`: 4× `fprintf(stderr,…)`~~ | **erledigt 2026-10-18** (auf `ERR`/`WARN` umgestellt) |
+| ~~P4~~ | ~~`FrameGrabber.h`: `#endif`-Kommentar~~ | **entfällt** (Datei entfernt) |
 | **P4** | `LICENSE` fehlt, `pyproject.toml:11` deklariert aber MIT | Todo „soll MIT bleiben?" offen |
 | ~~P4~~ | ~~`CMakeLists.txt:10` setzt `HIK_BUILD_APP` mit `CACHE … FORCE`~~ | **erledigt 2026-09-24**: `HIK_BUILD_APP` entfällt, `HikStandAlone` liegt unter `Examples/` (Schalter `HIK_BUILD_EXAMPLES`, im Wheel OFF) |
 | **P4** | keine CI (`.github/` fehlt) | die 78 Tests liefen bisher nur lokal |
@@ -406,3 +418,50 @@ hinterlassen.
 **Verifiziert:** `build/CTestTestfile.cmake` existiert · `ctest --test-dir build` → 78 Tests,
 100 % bestanden, 3 `[hardware]` als *Skipped* · `cmake -S core` weiterhin 75/75 grün ·
 `uv pip install -e . --no-build-isolation` läuft durch · `pytest -m "not hardware"` 6/6 grün.
+
+---
+
+## 13. Python-Kamera-Schnittstelle `uc2_cam_py` (2026-10-18)
+
+Umgesetzt nach freigegebenem Plan; Spezifikation: **`Docs/UC2_cam_py_interface.md`**
+(konsistente Fassung des Nutzer-Entwurfs, inkl. Zuordnung Entwurf → Python-Namen und Liste der
+Korrekturen/Ergänzungen).
+
+### Entscheidungen (vom Nutzer abgenommen)
+
+| Thema | Entscheidung |
+|---|---|
+| Umbenennung | Projektinhalt `uc2_hikpy` → `uc2_cam_py` (Paket, Distribution, CMake-Projekt, Doku). **Root-Ordner benennt der Nutzer selbst um**, danach `uv sync`; C++-Namespace `hik` und `hikcam_core` bleiben |
+| Namen | durchgängig snake_case |
+| Alte API | `Grabber`/`FrameGrabber`/`Frame`/`AutoMode`/`Roi` entfernt; `list_devices`, `run_connection_test` bleiben |
+| Simulation | Hersteller `"Simulated"` (`SimCamera`, wandernder Gauß aus `SimPattern.h`) |
+
+### Aufbau
+
+| Schicht | Dateien | Inhalt |
+|---|---|---|
+| C++ neutral | `CameraBase.h/.cpp` | Ring Buffer je `start()` neu (Geometrie eingefroren), `deliverFrame()` = die eine Kopie, In-flight-Zähler für sauberes Stoppen, Neustart bei ROI/Binning, Lesen mit `shared_ptr<RingBuffer>`; Pixelformat-Tabelle (PFNC), `nearestOnGrid`, `nearestBinning`, ROI-Umrechnung |
+| C++ Geräte | `HikCamera.*`, `SimCamera.*`, `SimPattern.*`, `MvsCamera.*` (erweitert: Access-Mode, stille Getter, Enum-Werte, Transportfilter) | Einheiten ms/fps/dB, ROI in ungebinnten Sensorpixeln |
+| Logging | `hikLog.h/.cpp` | austauschbare Senke; Python: Queue + Daemon-Thread (`_logging.py`), kein C++-Thread wartet auf den GIL |
+| Bindings | `bindings/hik_py.cpp` | `CameraBase`/`HikCamera`/`SimCamera`, `ImageHandle` (read-only numpy-View), `ImageWindow`, Log-Queue |
+| Python | `python/uc2_cam_py/*` | `Camera` (Validierung, Klemmen, Logging laut Spezifikation, RAM-/Plattenprüfung, Settings-JSON im Session-Kommentar), `ImgData`/`ImgMetaData` |
+
+### Verifikation
+
+- `ctest` in debug/profile/asan/tsan: **100/100**, ohne neue Warnungen; Nur-Core-Weg 96/96.
+- pytest `-m "not hardware"`: **134 passed** (inkl. 2 `display`-Tests mit Fenster); headless
+  132 passed + 2 skipped; `-m hardware` ohne Kamera: 19 skipped.
+- `RingBuffExample` (jetzt mit `SimPattern`): `RESULT: PASS`, identische Schwerpunkte.
+- Nebenbei behoben: `-Wformat-truncation` in `UC2_RingBuff.cpp` (Suffix-Puffer 8 → 16 Byte).
+
+### Offen / ungeprüft
+
+- **Ohne Kamera nicht prüfbar** — vom Nutzer mit `pytest -m hardware` zu verifizieren:
+  HikRobot-Knotennamen und Einheiten, Binning-Enum-Werte (= Faktor angenommen),
+  `SensorWidth`/`SensorHeight`, Pixelformat-Umstellung, Auswahl per Seriennummer,
+  Reihenfolge `list_devices(connection_type)` = Index.
+- `hikrobot.MODELS` ist leer → `pixel_pitch_um` = None, bis Datenblattwerte eingetragen sind.
+- Trigger nur Platzhalter; Geräte-Zeitstempel (Belichtung) nicht erfasst; `lost_packets`
+  nicht mehr exponiert; C++-Logs ohne Kamerabezug (mehrere Kameras → letzter Logger).
+- `MvsCamera.cpp: preloadRenderLib()` sucht den Renderer nur unter `lib/64` bzw. `lib/32`
+  (betrifft auf dem Pi nur die SDK-Vorschau in `run_connection_test`).

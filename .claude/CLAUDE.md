@@ -7,7 +7,7 @@ den Planungsmodus gehen und einen Umsetzungsplan vorlegen. Implementiert wird **
 ausdrücklicher Freigabe** durch den Nutzer. Reine Fragen, Recherche und Lesezugriffe sind
 davon nicht betroffen — die Regel gilt für Änderungen am Projekt.
 
-**Das Arbeitsverzeichnis `UC2_HIKpy` nicht verlassen.** `cd` nur innerhalb des Projekts.
+**Das Arbeitsverzeichnis `UC2_cam_py` (vormals `UC2_HIKpy`) nicht verlassen.** `cd` nur innerhalb des Projekts.
 Diese Einschränkung lässt sich als Berechtigungsregel nicht ausdrücken und steht deshalb hier.
 
 Welche Befehle ohne Rückfrage laufen dürfen und welche gesperrt sind, steht — technisch

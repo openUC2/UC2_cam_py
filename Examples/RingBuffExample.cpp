@@ -20,6 +20,7 @@
 // the expected position and was saved to disk.
 
 #include "ImageWindow.h"
+#include "SimPattern.h"
 #include "UC2_RingBuff.h"
 #include "hikLog.h"
 
@@ -61,39 +62,21 @@ struct Point
 
 /// Spot centre for frame @p index: row-major over a kCols x kRows grid whose
 /// cells evenly divide the image, the spot sitting in the middle of each cell.
+/// Same pattern as the "Simulated" camera (SimPattern.h).
 Point expectedPosition(uint64_t index)
 {
-    const uint64_t col = index % kCols;
-    const uint64_t row = (index / kCols) % kRows;
-    return Point{ kWidth * (col + 0.5) / kCols, kHeight * (row + 0.5) / kRows };
+    const hik::sim::SpotPosition p = hik::sim::spotPosition(index, kWidth, kHeight, kCols, kRows);
+    return Point{ p.x, p.y };
 }
 
 /// Render the Gaussian spot centred at @p c into @p dst (kWidth x kHeight).
-/// The 2-D Gaussian is separable, so two 1-D profiles are computed once and
-/// every pixel is a single multiplication.
 void renderGaussian(uint16_t* dst, const Point& c)
 {
-    const double sigma = kFwhmPx / (2.0 * std::sqrt(2.0 * std::log(2.0)));
-    const double k     = -1.0 / (2.0 * sigma * sigma);
-
-    std::vector<double> gx(kWidth);
-    std::vector<double> gy(kHeight);
-    for (uint32_t x = 0; x < kWidth; ++x)
-    {
-        gx[x] = std::exp(k * (x - c.x) * (x - c.x));
-    }
-    for (uint32_t y = 0; y < kHeight; ++y)
-    {
-        gy[y] = kPeak * std::exp(k * (y - c.y) * (y - c.y));
-    }
-    for (uint32_t y = 0; y < kHeight; ++y)
-    {
-        uint16_t* row = dst + static_cast<size_t>(y) * kWidth;
-        for (uint32_t x = 0; x < kWidth; ++x)
-        {
-            row[x] = static_cast<uint16_t>(gy[y] * gx[x] + 0.5);
-        }
-    }
+    hik::SensorRoi full;
+    full.width  = kWidth;
+    full.height = kHeight;
+    hik::sim::renderSpot(dst, hik::PixelDepth::UInt16, full, 1, hik::sim::SpotPosition{ c.x, c.y },
+                         kFwhmPx, kPeak);
 }
 
 /// Intensity-weighted centroid of a kWidth x kHeight Mono16 image.
@@ -277,7 +260,7 @@ void displayThread(hik::RingBuffer& rb, Shared& shared)
 int main(int argc, char** argv)
 {
     hik::RingBuffer::Config cfg;
-    cfg.storagePath = (argc > 1) ? argv[1] : "/data/recordings";
+    cfg.storagePath = (argc > 1) ? argv[1] : "./build/recordings";
     cfg.slotCount   = 8;
     cfg.comment     = "bead tracking run 7";
     cfg.policy      = hik::FullPolicy::Overwrite;

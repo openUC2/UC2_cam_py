@@ -15,6 +15,10 @@ endif()
 option(HIK_BUILD_TESTS "Build the C++ unit tests (Catch2)" OFF)
 option(HIK_ENABLE_HARDWARE_TESTS "Also build C++ tests that need a connected camera" OFF)
 
+# Sanitizer / profiling switches (HIK_SANITIZERS, HIK_PROFILING). A no-op when
+# the top-level project already included it.
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/HikTooling.cmake")
+
 # ---------------------------------------------------------------------------
 # Locate the MVS / HikRobot Machine Vision SDK.
 # Override with -DMVS_ROOT=/path or the MVCAM_SDK_PATH environment variable.
@@ -35,20 +39,23 @@ if(NOT EXISTS "${MVS_INCLUDE_DIR}/MvCameraControl.h")
         "Set -DMVS_ROOT=/path/to/MVS (the directory that contains include/ and lib/).")
 endif()
 
-# 64-bit or 32-bit library subdirectory.
+# Library subdirectory: the x86 SDK ships lib/64 and lib/32, the ARM SDKs
+# (e.g. Raspberry Pi 5) use an architecture-named directory instead.
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(MVS_LIB_DIR "${MVS_ROOT}/lib/64")
+    set(MVS_LIB_CANDIDATES "${MVS_ROOT}/lib/64" "${MVS_ROOT}/lib/aarch64" "${MVS_ROOT}/lib/arm64")
 else()
-    set(MVS_LIB_DIR "${MVS_ROOT}/lib/32")
+    set(MVS_LIB_CANDIDATES "${MVS_ROOT}/lib/32" "${MVS_ROOT}/lib/armhf")
 endif()
 
 find_library(MVS_CAMERA_CONTROL_LIB
     NAMES MvCameraControl
-    PATHS "${MVS_LIB_DIR}"
+    PATHS ${MVS_LIB_CANDIDATES}
     NO_DEFAULT_PATH)
 if(NOT MVS_CAMERA_CONTROL_LIB)
-    message(FATAL_ERROR "libMvCameraControl not found in ${MVS_LIB_DIR}.")
+    list(JOIN MVS_LIB_CANDIDATES "\n  " _mvs_searched)
+    message(FATAL_ERROR "libMvCameraControl not found. Searched:\n  ${_mvs_searched}")
 endif()
+get_filename_component(MVS_LIB_DIR "${MVS_CAMERA_CONTROL_LIB}" DIRECTORY)
 message(STATUS "Using MVS library:  ${MVS_CAMERA_CONTROL_LIB}")
 
 # Publish the library directory so the parent project can bake it into the
@@ -83,8 +90,12 @@ add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/ImageWindow.cpp
     src/MvsError.cpp
     src/CaptureApp.cpp
-    src/FrameGrabber.cpp
-    src/UC2_RingBuff.cpp)
+    src/UC2_RingBuff.cpp
+    src/hikLog.cpp
+    src/CameraBase.cpp
+    src/HikCamera.cpp
+    src/SimCamera.cpp
+    src/SimPattern.cpp)
 
 set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

@@ -1,0 +1,81 @@
+# Valgrind suppressions (memcheck, helgrind, drd) - see Docs/Tooling.md.
+# Only third-party noise and documented, intentional findings belong here.
+# Function names are mangled; regenerate candidates with --gen-suppressions=all.
+
+# --- Intentional payload race of the ring buffer (.claude/STATUS.md 11.1) ----
+# The MT tests read slot bytes while the producer may be rewriting them and
+# validate afterwards with ReadHandle::stillValid(). helgrind/drd additionally
+# do not model std::atomic happens-before, so they report the same reads even
+# in the Wait test, where the protocol rules the overlap out. Scoped to the
+# test helper intact() in test_ringbuffer_mt.cpp.
+{
+   hik-mt-test-payload-read-helgrind
+   Helgrind:Race
+   fun:_ZN12_GLOBAL__N_1*intact*
+}
+{
+   hik-mt-test-payload-read-drd
+   drd:ConflictingAccess
+   fun:_ZN12_GLOBAL__N_1*intact*
+}
+
+# --- notify outside the mutex ------------------------------------------------
+# RingBuffer wakes waiters with "{ lock_guard lk(m_mtx); } cv.notify_all();":
+# the empty critical section orders the state change before the wait predicate
+# is re-checked, and notifying unlocked avoids waking a thread straight into a
+# held mutex. Correct per the C++ memory model; drd flags it as "probably".
+{
+   hik-ringbuffer-notify-unlocked
+   drd:CondRaceErr
+   ...
+   fun:_ZN3hik10RingBuffer*
+}
+
+# --- MVS SDK (every library under .../MVS/lib/, x86 and ARM) ----------------
+# Uninstrumented vendor code with its own worker threads and exit-time leaks.
+{
+   mvs-sdk-leak
+   Memcheck:Leak
+   ...
+   obj:*/MVS/lib/*
+}
+{
+   mvs-sdk-race-helgrind
+   Helgrind:Race
+   ...
+   obj:*/MVS/lib/*
+}
+{
+   mvs-sdk-race-drd
+   drd:ConflictingAccess
+   ...
+   obj:*/MVS/lib/*
+}
+{
+   mvs-sdk-pthread-api-helgrind
+   Helgrind:PthAPIerror
+   ...
+   obj:*/MVS/lib/*
+}
+{
+   mvs-sdk-condvar-drd
+   drd:CondErr
+   ...
+   obj:*/MVS/lib/*
+}
+{
+   mvs-sdk-dlclose-lock-order
+   Helgrind:LockOrder
+   ...
+   fun:_dl_close*
+}
+
+# --- libX11 / libxcb ---------------------------------------------------------
+# xcb destroys a condition variable it may still be waiting on during reply
+# handling; drd reports it, it is xcb-internal.
+{
+   xcb-condvar-drd
+   drd:CondErr
+   ...
+   fun:xcb_*
+}

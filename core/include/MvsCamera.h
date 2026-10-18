@@ -102,10 +102,11 @@ public:
     static bool initSdk();
     static void finalizeSdk();
 
-    /// Enumerate all reachable GigE and USB3 devices. The result is cached
-    /// internally so open(index) can be called afterwards. Returns the number
-    /// of devices found, or a negative value on error.
-    int enumerateDevices();
+    /// Enumerate the reachable devices of the given transport layers (default:
+    /// GigE and USB3). The result is cached internally so open(index) can be
+    /// called afterwards. Returns the number of devices found, or a negative
+    /// value on error.
+    int enumerateDevices(unsigned int layers = MV_GIGE_DEVICE | MV_USB_DEVICE);
 
     /// Human-readable copy of the last enumeration result.
     const std::vector<DeviceInfo>& devices() const { return m_devices; }
@@ -135,6 +136,9 @@ public:
     /// Save a grabbed frame to disk. The SDK performs any needed pixel-format
     /// conversion (e.g. Bayer -> RGB). Returns true on success.
     bool saveFrame(const MV_FRAME_OUT& frame, const std::string& path, SaveFormat format);
+
+    /// Description of the open device (empty while closed).
+    const DeviceInfo& info() const { return m_info; }
 
     bool isOpen() const { return m_handle != nullptr; }
     bool isGrabbing() const { return m_grabbing; }
@@ -222,15 +226,34 @@ public:
     /// @return true on success.
     bool getSensorSize(int64_t& widthMax, int64_t& heightMax);
 
-private:
-    // Generic GenICam node accessors (any out pointer may be null).
+    // --- Generic GenICam node access ----------------------------------------
+    // The set*Node() writers log an ERR on failure. The tryGet*() readers are
+    // silent, so optional nodes can be probed without flooding the log; any
+    // out pointer may be null.
+
+    /// @return the access mode of node @p key (AM_NI if it does not exist).
+    MV_XML_AccessMode accessMode(const char* key);
+    /// @return true if node @p key can be written right now (RW or WO).
+    bool isWritable(const char* key);
+    /// @return the interface type of node @p key (IFT_IValue if unknown).
+    MV_XML_InterfaceType interfaceType(const char* key);
+
+    bool tryGetFloat(const char* key, double* cur, double* min, double* max);
+    bool tryGetInt(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc);
+    /// @param supported [out] the values the enumeration currently accepts.
+    bool tryGetEnum(const char* key, unsigned int* cur, std::vector<unsigned int>* supported);
+    bool tryGetBool(const char* key, bool* cur);
+
     bool setFloatNode(const char* key, float value);
-    bool getFloatNode(const char* key, float* cur, float* min, float* max);
     bool setIntNode(const char* key, int64_t value);
-    bool getIntNode(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc);
     bool setEnumNode(const char* key, unsigned int value);
-    bool getEnumNode(const char* key, unsigned int* cur);
     bool setBoolNode(const char* key, bool value);
+
+private:
+    // Logging readers used by the parameter helpers above.
+    bool getFloatNode(const char* key, float* cur, float* min, float* max);
+    bool getIntNode(const char* key, int64_t* cur, int64_t* min, int64_t* max, int64_t* inc);
+    bool getEnumNode(const char* key, unsigned int* cur);
 
     void*                   m_handle = nullptr;  ///< SDK device handle
     std::shared_ptr<MvsSdk> m_sdk;       // keeps the SDK alive while this camera lives

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15...3.30)
-project(uc2_hikpy LANGUAGES CXX)
+project(uc2_cam_py LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,18 @@ option(HIK_BUILD_EXAMPLES "Build the example programs" ON)
 # HIK_BUILD_TESTS is OFF (the test list is then simply empty); the directory
 # property is inherited by every subdirectory.
 enable_testing()
+
+# Sanitizer / profiling switches (HIK_SANITIZERS, HIK_PROFILING). Included here,
+# before any subdirectory, so the flags reach the core, the examples and the
+# tests alike. See Docs/Tooling.md.
+include("${CMAKE_CURRENT_SOURCE_DIR}/core/cmake/HikTooling.cmake")
+
+# A sanitized extension module would need the sanitizer runtime LD_PRELOADed
+# into Python; the analysis builds cover the C++ side only.
+if(HIK_SANITIZERS AND HIK_BUILD_PYTHON)
+    message(STATUS "HIK: HIK_SANITIZERS is set -> not building the Python module")
+    set(HIK_BUILD_PYTHON OFF)
+endif()
 
 add_subdirectory(core)
 
@@ -67,6 +79,6 @@ if (HIK_BUILD_PYTHON)
         INSTALL_RPATH "${HIKCAMTEST_MVS_LIB_DIR}")
 
     # Install the extension next to the pure-Python package (see wheel.packages,
-    # which maps python/uc2_hikpy -> the wheel's uc2_hikpy/ directory).
-    install(TARGETS _hik DESTINATION uc2_hikpy)
+    # which maps python/uc2_cam_py -> the wheel's uc2_cam_py/ directory).
+    install(TARGETS _hik DESTINATION uc2_cam_py)
 endif()

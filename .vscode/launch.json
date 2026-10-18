@@ -7,7 +7,7 @@
             "type": "debugpy",
             "request": "launch",
             //"program": "${workspaceFolder}/backend/test.py",
-            "program": "${workspaceFolder}/python/uc2_hikpy/__main__.py",
+            "program": "${workspaceFolder}/python/uc2_cam_py/__main__.py",
             // Same working directory as `uv run` uses, so relative paths and .env
             // lookups behave identically in the debugger.
             "cwd": "${workspaceFolder}",
@@ -18,19 +18,19 @@
             // Runs the same entry point under gdb, so breakpoints in the C++
             // sources (core/src/*.cpp, bindings/hik_py.cpp) are hit. Python
             // breakpoints do NOT work here - use "Debug test.py" for those.
-            "name": "Debug C++ (python -m uc2_hikpy)",
+            "name": "Debug C++ (python -m uc2_cam_py)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/.venv/bin/python",
             // -i 0 skips the interactive device prompt, -n 20 bounds the run.
-            "args": ["-m", "uc2_hikpy", "-i", "0", "-n", "20"],
+            "args": ["-m", "uc2_cam_py", "-i", "0", "-n", "20"],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "externalConsole": false,
             "MIMode": "gdb",
             // The .so Python imports is a copy in site-packages: rebuilding the
             // CMake tree alone does not update it, so reinstall before launching.
-            "preLaunchTask": "uc2_hikpy: Debug-Build (editable reinstall)",
+            "preLaunchTask": "uc2_cam_py: Debug-Build (editable reinstall)",
             "setupCommands": [
                 {
                     "description": "GDB pretty-printing aktivieren",
@@ -40,19 +40,56 @@
             ]
         },
         {
-            // Runs the ring-buffer example under gdb. No camera needed.
-            // The recording goes to build/recordings, because /data/recordings
+            // Runs the ring-buffer example under gdb, from the build tree of the
+            // ACTIVE CMake preset (debug / profile / asan / tsan). No camera needed.
+            // The recording goes into that build tree, because /data/recordings
             // needs root to create; drop "args" to use the program's default.
+            // In an asan/tsan build a sanitizer report stops in the debugger.
             "name": "Debug C++ (RingBuffExample)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/Examples/RingBuffExample",
-            "args": ["${workspaceFolder}/build/recordings"],
+            "program": "${command:cmake.buildDirectory}/Examples/RingBuffExample",
+            "args": ["${command:cmake.buildDirectory}/recordings"],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "externalConsole": false,
             "MIMode": "gdb",
             "preLaunchTask": "RingBuffExample: build",
+            // Same sanitizer runtime options as CMakePresets.json (harmless in
+            // debug/profile builds).
+            "environment": [
+                { "name": "ASAN_OPTIONS",  "value": "detect_leaks=1:fast_unwind_on_malloc=0:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1" },
+                { "name": "LSAN_OPTIONS",  "value": "suppressions=${workspaceFolder}/tools/sanitizers/lsan.supp" },
+                { "name": "UBSAN_OPTIONS", "value": "print_stacktrace=1:halt_on_error=1:suppressions=${workspaceFolder}/tools/sanitizers/ubsan.supp" },
+                { "name": "TSAN_OPTIONS",  "value": "suppressions=${workspaceFolder}/tools/sanitizers/tsan.supp:second_deadlock_stack=1" }
+            ],
+            "setupCommands": [
+                {
+                    "description": "GDB pretty-printing aktivieren",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            // Debugs whatever target is selected as "launch target" in the CMake
+            // Tools status bar (e.g. hikcam_core_tests, HikStandAlone), from the
+            // active preset's build tree. CMake Tools builds it first.
+            "name": "Debug C++ (CMake launch target)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "environment": [
+                { "name": "ASAN_OPTIONS",  "value": "detect_leaks=1:fast_unwind_on_malloc=0:detect_stack_use_after_return=1:strict_string_checks=1:check_initialization_order=1" },
+                { "name": "LSAN_OPTIONS",  "value": "suppressions=${workspaceFolder}/tools/sanitizers/lsan.supp" },
+                { "name": "UBSAN_OPTIONS", "value": "print_stacktrace=1:halt_on_error=1:suppressions=${workspaceFolder}/tools/sanitizers/ubsan.supp" },
+                { "name": "TSAN_OPTIONS",  "value": "suppressions=${workspaceFolder}/tools/sanitizers/tsan.supp:second_deadlock_stack=1" }
+            ],
             "setupCommands": [
                 {
                     "description": "GDB pretty-printing aktivieren",

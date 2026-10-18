@@ -1321,7 +1321,7 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
     m_filePath = base.string() + ".uc2rb";
     for (int n = 1; n < 1000 && std::filesystem::exists(m_filePath); ++n)
     {
-        char suffix[8];
+        char suffix[16];   // room for any int, keeps -Wformat-truncation quiet
         std::snprintf(suffix, sizeof(suffix), "_%03d", n);
         m_filePath = base.string() + suffix + ".uc2rb";
     }

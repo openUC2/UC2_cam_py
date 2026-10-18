@@ -1,0 +1,8 @@
+# LSAN suppressions for the HIK C++ code - see Docs/Tooling.md.
+# Only third-party noise and documented, intentional findings belong here.
+
+# MVS SDK (every library under .../MVS/lib/, x86 and ARM): libMvCameraControl keeps ~32 KB of internal state (and objects of
+# the transport-layer libraries it dlopen()s) alive until process exit. Not
+# fixable on our side. Matching needs full stacks through the SDK, which has
+# no frame pointers - hence fast_unwind_on_malloc=0 in ASAN_OPTIONS.
+leak:/MVS/lib/

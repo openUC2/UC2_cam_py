@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "ImageWindow.h"
+#include "hikLog.h"
 
 namespace hik {
 
@@ -61,12 +62,12 @@ int promptForIndex(int deviceCount)
     int index = -1;
     if (std::scanf("%d", &index) != 1)
     {
-        std::fprintf(stderr, "No valid index entered.\n");
+        ERR("No valid index entered.");
         return -1;
     }
     if (index < 0 || index >= deviceCount)
     {
-        std::fprintf(stderr, "Index out of range.\n");
+        ERR("Index out of range.");
         return -1;
     }
     return index;
@@ -110,7 +111,8 @@ int runCapture(const CaptureOptions& opts)
     }
     else if (index >= count)
     {
-        std::fprintf(stderr, "Requested index %d but only %d device(s) found.\n", index, count);
+        ERR("Requested index " + std::to_string(index) + " but only " + std::to_string(count)
+            + " device(s) found.");
         return 1;
     }
 
@@ -138,8 +140,7 @@ int runCapture(const CaptureOptions& opts)
     SaveFormat snapshotFormat = SaveFormat::Png;
     if (!snapshotPath.empty() && !formatFromPath(snapshotPath, snapshotFormat))
     {
-        std::fprintf(stderr, "Unknown snapshot extension in '%s', using PNG.\n",
-                     snapshotPath.c_str());
+        WARN("Unknown snapshot extension in '" + snapshotPath + "', using PNG.");
         snapshotFormat = SaveFormat::Png;
         snapshotPath += ".png";
     }

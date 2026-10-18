@@ -140,8 +140,8 @@ wheels = [
 ]
 
 [[package]]
-name = "uc2-hikpy"
-version = "0.1.0"
+name = "uc2-cam-py"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

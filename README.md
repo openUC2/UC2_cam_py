@@ -1,121 +1,125 @@
-# UC2_pyCams
+# UC2_cam_py
 
-An interface in Python for using the HIK Camera in UC2 Projects
+A Python camera interface for UC2 projects, built on a C++ core with a ring
+buffer, recording to disk and zero-copy image access.
 
 ## Scope
 
-A small test tool for **HikRobot / MVS** industrial cameras (GigE Vision and
-USB3 Vision), available both as a **C++ terminal application** and as a
-**Python package** (via pybind11). It
-
-- enumerates the connected cameras,
-- opens one (by index, interactively or via `--index`),
-- streams frames in continuous (free-run) mode,
-- prints per-frame info (size, length, pixel format) to the terminal,
-- shows the **live image in a simple window** (when built with X11), and
-- saves a **snapshot** to disk.  (to be depricated!)
-
-It is built directly on the SDK installed at `/opt/MVS`
-(`libMvCameraControl`). The live preview uses the SDK's own renderer
-(`MV_CC_DisplayOneFrameEx2`), so no pixel-format conversion or OpenCV is
-needed — the SDK draws Mono/Bayer/RGB frames into the window for you.
+- **Python interface** (`uc2_cam_py`): open a camera with `create_camera()`,
+  set exposure / frame rate / gain / binning / ROI, start and stop acquisition,
+  read images as numpy arrays without copying, record to disk. The full
+  specification is [Docs/UC2_cam_py_interface.md](Docs/UC2_cam_py_interface.md).
+- **Vendors:** HikRobot cameras (GigE Vision and USB3 Vision, via the MVS SDK at
+  `/opt/MVS`) and a **simulated camera** for development and tests without hardware.
+- **C++ core** (`hikcam_core`): ring buffer
+  ([Docs/RingBuff_REF.md](Docs/RingBuff_REF.md)), camera abstraction, logging.
+- **Tools:** a terminal capture tool (`HikStandAlone`), a ring-buffer example,
+  profiling and sanitizer setups ([Docs/Tooling.md](Docs/Tooling.md)).
 
 ## Project layout
 
 ```
-UC2_HIKpy/
+UC2_cam_py/
 ├── core/                     # the C++ library
 │   ├── CMakeLists.txt        #   builds hikcam_core (lib) and the Catch2 tests
 │   ├── include/              #   headers
-│   │   ├── CaptureApp.h      #     capture session shared by CLI + Python
-│   │   ├── MvsCamera.h       #     camera wrapper (enumerate/open/grab/display/save)
-│   │   ├── ImageWindow.h     #     minimal X11 preview window (opaque, X11-free API)
-│   │   └── MvsError.h        #     SDK error-code -> text
+│   │   ├── CameraBase.h      #     vendor-neutral camera + ring-buffer acquisition
+│   │   ├── HikCamera.h       #     HikRobot implementation (MVS SDK)
+│   │   ├── SimCamera.h       #     simulated camera (walking Gaussian spot)
+│   │   ├── UC2_RingBuff.h    #     ring buffer + disk streamer
+│   │   ├── MvsCamera.h       #     thin MVS SDK wrapper (enumerate/open/nodes)
+│   │   ├── CaptureApp.h      #     connection test shared by CLI + Python
+│   │   ├── ImageWindow.h     #     minimal X11 preview window
+│   │   └── hikLog.h          #     logging with a replaceable sink
 │   ├── src/                  #   library sources
-│   └── tests/                #   C++ unit tests (Catch2; -DHIK_BUILD_TESTS=ON)
+│   └── tests/                #   C++ unit tests (Catch2)
 ├── Examples/                 # programs built on the core (-DHIK_BUILD_EXAMPLES, default ON)
 │   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
 │   └── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
 ├── bindings/
-│   └── hik_py.cpp            # pybind11 module (_hik)
-├── python/uc2_hikpy/         # the Python package
-│   ├── __init__.py           #   initialises the SDK on import
-│   └── __main__.py           #   `python -m uc2_hikpy` CLI
-├── tests/test_hik.py         # pytest suite (+ runnable manual smoke script)
-├── CMakeLists.txt            # top-level build (Python extension) for scikit-build-core
+│   └── hik_py.cpp            # pybind11 module (_hik), low level
+├── python/uc2_cam_py/        # the Python package
+│   ├── camera.py             #   Camera + create_camera (the interface)
+│   ├── data.py               #   ImgData, ImgMetaData
+│   ├── hikrobot.py           #   HikRobot vendor class (+ model table)
+│   ├── simulated.py          #   simulated vendor class
+│   ├── preview.py            #   simple live-view window
+│   ├── defaults.py           #   default values (later from config.yaml)
+│   └── __main__.py           #   `python -m uc2_cam_py` connection test
+├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
+├── Docs/                     # interface spec, ring-buffer reference, tooling
+├── CMakePresets.json         # build variants debug | profile | asan | tsan
 ├── pyproject.toml            # Python packaging (scikit-build-core + pybind11, uv)
-├── .python-version           # pins Python to 3.12
 └── README.md
 ```
 
 ## Architecture
 
-The package is layered: thin Python management on top, all image handling in C++.
-
 ```mermaid
 flowchart TD
     U["Your Python code"] --> P
-    subgraph P["uc2_hikpy — Python package"]
-        G["Grabber, configure()  ·  grabber.py"]
-        INIT["re-exports  ·  __init__.py"]
+    subgraph P["uc2_cam_py — Python package"]
+        CAM["create_camera · Camera  ·  camera.py"]
+        DATA["ImgData · ImgMetaData  ·  data.py"]
+        VEND["HikRobotCamera · SimulatedCamera"]
+        LOG["log forwarder thread  ·  _logging.py"]
     end
     P --> EXT
     subgraph EXT["_hik — pybind11 extension  ·  bindings/hik_py.cpp"]
-        FB["FrameGrabber"]
-        FRM["Frame"]
-        TYPES["DeviceInfo · Roi · AutoMode"]
-        FUNCS["initialize · finalize · list_devices · run_connection_test"]
+        CB["CameraBase · HikCamera · SimCamera"]
+        IH["ImageHandle (zero-copy numpy view)"]
+        LQ["log queue"]
     end
     EXT --> CORE
     subgraph CORE["hikcam_core — C++ static lib  ·  core/"]
-        MC["MvsCamera (enumerate/open/params/grab)"]
-        CFG["FrameGrabber (callback + latest-frame handoff)"]
-        AUX["CaptureApp · MvsError · ImageWindow"]
+        BASE["CameraBase (start/stop, settings, deliverFrame)"]
+        RB["RingBuffer + FileStreamSink (.uc2rb)"]
+        DEV["HikCamera → MvsCamera  ·  SimCamera"]
     end
     CORE --> SDK["MVS SDK — libMvCameraControl  ·  /opt/MVS"]
-    SDK --> CAM([HikRobot / MVS camera])
+    SDK --> HW([HikRobot camera])
 ```
 
-Frame acquisition is event-driven and zero-copy: the SDK fills its own buffer
-nodes and calls back on a worker thread; Python pulls the latest one with the
-GIL released and receives a numpy view that aliases the SDK buffer.
+Acquisition runs entirely in C++ and never needs the GIL: the device thread
+(SDK callback or simulation thread) copies each frame once into a ring slot;
+Python reads slots as read-only numpy views; a writer thread streams the slots
+to disk.
 
 ```mermaid
 sequenceDiagram
-    participant Py as Python (Grabber)
-    participant FG as FrameGrabber (C++)
-    participant CB as SDK callback thread
-    participant Cam as Camera + MVS SDK
+    participant Py as Python (Camera)
+    participant CB as CameraBase (C++)
+    participant Dev as Device thread (SDK callback)
+    participant RB as RingBuffer
+    participant W as Disk writer thread
 
-    Py->>FG: start()
-    FG->>Cam: SetImageNodeNum · SetGrabStrategy(OneByOne)<br/>RegisterImageCallBackEx2 · StartGrabbing
-    loop while grabbing
-        Cam-->>CB: frame ready (SDK worker thread)
-        CB->>FG: onFrame(): keep latest node, notify
+    Py->>CB: start()  (GIL released)
+    CB->>RB: new ring for the current geometry, open session (.uc2rb)
+    loop every frame
+        Dev->>CB: deliverFrame(data)
+        CB->>RB: beginWrite → memcpy (the one copy) → commitWrite
+        RB-->>W: notify → writev(header, slot) to disk
     end
-    Py->>FG: wait_for_frame(timeout)  (GIL released)
-    FG-->>Py: Frame → frame.array (zero-copy view of SDK buffer)
-    Py->>FG: next wait_for_frame() frees the previous node
-    Py->>FG: stop() / close()
-    FG->>Cam: StopGrabbing · unregister · CloseDevice
+    Py->>CB: get_last_image()
+    CB-->>Py: ImgData (numpy view onto the slot, keeps the ring alive)
+    Py->>CB: stop() / close()
 ```
 
 ## Requirements
 
-- The MVS SDK, commonly installed at `/opt/MVS`.
-- A C++14 compiler, CMake ≥ 3.15, `make`/`ninja`.
-- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12 or higher
+- The MVS SDK, commonly installed at `/opt/MVS` (only needed for HikRobot cameras at
+  runtime, but required to build).
+- A C++17 compiler, CMake ≥ 3.25, Ninja.
+- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
   (uv installs it automatically from `.python-version`).
-- **For the preview window:** the X11 development headers (already installed
-  here). If they are ever missing, install them once:
+- **For the preview window:** the X11 development headers. If they are missing:
 
   ```bash
   sudo dnf install libX11-devel        # Fedora / Nobara
   # or: sudo apt install libx11-dev    # Debian / Ubuntu
   ```
 
-  Without them everything still builds and runs **headless** — it grabs frames
-  and writes a snapshot to disk instead of showing a window.
+  Without them everything still builds and runs **headless**.
 
 ## Preparing CMake
 - Initially CMake might fail, due to the absence of pybind11
@@ -125,218 +129,99 @@ sequenceDiagram
 uv sync
 ```
 
-- if you are using vscode, just add the following to the .vscode/settings.json (make sure the paths are correct)
+- All configure settings live in `CMakePresets.json`. The `debug` preset points
+  CMake at the `.venv` interpreter and its pybind11; the other presets
+  (`profile`, `asan`, `tsan`) skip the Python module and need no pybind11.
+  Each preset builds into `build/<preset>`:
 
-```json
-// .vscode/settings.json
-{
-  "cmake.environment": {
-    "VIRTUAL_ENV": "${workspaceFolder}/.venv",
-    "PATH": "${workspaceFolder}/.venv/bin:${env:PATH}"
-  },
-  "cmake.configureSettings": {
-    "Python_EXECUTABLE": "${workspaceFolder}/.venv/bin/python",
-    "pybind11_DIR": "${workspaceFolder}/.venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11"
-  }
-}
+```bash
+cmake --preset debug && cmake --build --preset debug
 ```
+
+- VS Code (CMake Tools) picks the presets up automatically
+  (`"cmake.useCMakePresets": "always"`); choose one in the status bar.
+- Profiling (perf/hotspot, callgrind/kcachegrind) and sanitizer/valgrind runs
+  are described in [Docs/Tooling.md](Docs/Tooling.md).
 
 ## Build & run — Python (uv)
 
 ```bash
-uv sync                              # creates .venv (Python 3.12), builds the extension
-uv run pytest                        # runs the unit tests (no camera required)
-uv run python tests/test_hik.py      # manual smoke run: lists cameras and starts a capture
+uv sync                                        # creates .venv (Python 3.12), builds the extension
+uv run pytest -m "not hardware"                # the full suite against the simulated camera
+uv run pytest -m hardware                      # the same checks on a connected HikRobot camera
+UC2_DISPLAY_SECONDS=30 uv run pytest -m display    # live view of get_last_image() in a window
 ```
 
-From Python:
+After C++ changes reinstall the package (Python imports a *copy* of the module):
+`uv pip install -e . --no-build-isolation`.
+
+## Using the camera (Python)
 
 ```python
-import uc2_hikpy
+import logging
+import uc2_cam_py
+from uc2_cam_py import ImgData, ImgMetaData
 
-for i, dev in enumerate(uc2_hikpy.list_devices()):
-    print(i, dev)
+logging.basicConfig(level=logging.INFO)          # the C++ core logs through Python logging
 
-# Quick connection test (index / frames / snapshot / display are all optional).
-# For real acquisition use Grabber (see below).
-uc2_hikpy.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
+print(uc2_cam_py.list_devices())                 # connected HikRobot cameras (serials, transport)
+
+with uc2_cam_py.create_camera(
+    vendor="HikRobot",          # or "Simulated" (no hardware needed)
+    connection_type="USB3",     # "USB3" | "GigE" | None
+    serial=None, index=None,    # neither -> first camera
+    buffer_size=16,             # images in the ring buffer
+    image_file_path="~/UC2_recordings",
+    store_image_data=True,      # stream every image to a .uc2rb file
+) as cam:
+    print(cam.pixel_count, cam.range_exposure_time_ms, cam.range_binning)
+
+    cam.exposure_time_ms = 5.0          # clamped to the camera's range
+    cam.frame_rate_per_sec = 30.0
+    cam.gain_db = None                  # automatic gain
+    cam.binning = 2
+    cam.roi = (100, 100, 800, 600)      # (x, y, width, height), unbinned sensor pixels
+
+    cam.start()
+    img: ImgData | None = cam.get_last_image()
+    if img is not None:
+        frame = img.data                # read-only numpy view, no copy
+        result = frame.mean()
+        if img.is_valid():              # not overwritten meanwhile -> result is consistent
+            print(img.sequence, img.time_ns, result)
+    meta: ImgMetaData = cam.get_image_info()
+    cam.stop()
+    print(cam.recording_file, meta.width, meta.height)
 ```
 
-`uv run python -m uc2_hikpy --index 0 --frames 100 --snapshot capture.png`
-runs the same connection test from the command line. The MVS runtime libraries
-(including the renderer) are located automatically, so you do **not** need to
-export `LD_LIBRARY_PATH`.
-
-## Continuous grabbing (Python)
-
-For live streaming, `Grabber` runs acquisition on an SDK worker thread and hands
-Python the **latest** frame as a **zero-copy** numpy view. There is intentionally
-**no ring buffer here** — an indexable history is provided by a separate external
-package; this layer exposes only the most recent frame plus its handle/size so
-that ring can ingest it.
+Live view without extra dependencies:
 
 ```python
-from uc2_hikpy import Grabber
+from uc2_cam_py.preview import PreviewWindow
 
-with Grabber(index=0, node_num=5) as g:      # opens + starts; stops + closes on exit
-    for frame in g.frames(timeout_ms=1000):
-        img = frame.array                    # zero-copy view: (H, W) or (H, W, 3) uint8
-        # frame.address / frame.nbytes / frame.width / frame.height / frame.pixel_format
-        # feed the future external ring, e.g. ring.push(frame.address, frame.nbytes)
-        if some_condition:
-            break
+with uc2_cam_py.create_camera(vendor="Simulated", start_on_init=True, store_image_data=False) as cam:
+    win = PreviewWindow(960, 600)
+    while win.show(cam.get_last_image()):    # until the window is closed
+        pass
 ```
 
-Key points:
-
-- **Acquisition model:** event-driven callback (`MV_CC_RegisterImageCallBackEx2`)
-  on an SDK-internal thread, using the **OneByOne** grab strategy (ordered frames).
-- **SDK buffer nodes:** the SDK's internal pool depth is set with
-  `MV_CC_SetImageNodeNum` (default 1; some cameras 3). `Grabber(node_num=...)`
-  raises it for double/triple buffering (clamped to ≥ 3).
-- **Zero-copy contract:** `frame.array` aliases SDK-owned memory and is valid
-  **only until the next `wait_for_frame()`** call. Call `frame.copy()` to keep an
-  independent array.
-- **No frames lost while the consumer keeps up.** `g.frames_dropped` counts frames
-  superseded before they were read (expected ~0 with a fast consumer).
-
-### Parameters (exposure, gain, frame rate, ROI)
-
-Get/set are available in C++ (`hik::MvsCamera` / `hik::FrameGrabber`) and Python
-(`Grabber` / the underlying `FrameGrabber`). Units: **exposure = µs, gain = dB,
-frame rate = fps**.
-
-```python
-from uc2_hikpy import Grabber, AutoMode
-
-with Grabber(index=0) as g:
-    # Apply several at once (only what you pass is set; ROI is applied last):
-    g.configure(exposure_us=5000, gain_db=2.0, fps=30, roi=(640, 480))
-
-    # ...or individually:
-    g.set_exposure_time(5000)          # switches auto-exposure Off
-    g.set_gain(2.0)                    # switches auto-gain Off
-    g.set_frame_rate(30)              # enables manual frame-rate control
-    g.set_exposure_auto(AutoMode.Continuous)   # or let the firmware regulate
-
-    print(g.get_exposure_time(), g.get_gain(), g.get_resulting_frame_rate())
-    print("sensor:", g.get_sensor_size(), "roi:", g.get_roi())
-
-    frame = g.wait_for_frame()         # frame.array.shape now matches the ROI
-```
-
-Notes:
-
-- **Exposure / gain / frame rate change live** while grabbing.
-- **ROI does not invalidate zero-copy.** `frame.array` is rebuilt from each frame's
-  own dimensions, so a smaller ROI just yields a smaller zero-copy view. The SDK
-  only allows ROI changes while stopped, so `set_roi()` **briefly stops and restarts**
-  the stream automatically. Requested ROI values are clamped and aligned to the
-  camera's increment grid (width/height step is typically 16).
-- Setting a manual exposure/gain switches the matching auto mode Off so the value
-  takes effect; use `set_exposure_auto()` / `set_gain_auto()` for firmware control.
-
-## Python API reference (`_hik` bindings)
-
-Everything below is exposed by the compiled `_hik` module and re-exported from
-`uc2_hikpy`. Units: exposure = µs, gain = dB, frame rate = fps.
-
-**Module-level functions**
-
-| Function | Returns | Description |
-|---|---|---|
-| `initialize()` | `bool` | Initialise the MVS SDK (done automatically on `import uc2_hikpy`). |
-| `finalize()` | `None` | Finalise the SDK (registered at interpreter exit). |
-| `list_devices()` | `list[DeviceInfo]` | Enumerate connected GigE/USB3 cameras. |
-| `run_connection_test(index=-1, frames=0, snapshot="", display=True)` | `int` | Quick connection test: grab a few frames / save a snapshot. `0` ok, `2` no camera, `1` error. |
-
-**`DeviceInfo`** — read-only: `transport`, `model_name`, `serial`, `user_name`, `ip` (all `str`).
-
-**`Frame`** — one grabbed image (zero-copy; valid until the next `wait_for_frame()`):
-
-| Member | Type | Description |
-|---|---|---|
-| `array` | `np.ndarray` | Zero-copy view: `(H, W)` mono or `(H, W, 3)` RGB/BGR `uint8` (else flat bytes). |
-| `copy()` | `np.ndarray` | Independent, owning copy safe to keep. |
-| `width`, `height` | `int` | Frame dimensions. |
-| `pixel_format` | `int` | MvGvspPixelType value. |
-| `frame_num` | `int` | Device frame/sequence number. |
-| `timestamp` | `int` | Host timestamp. |
-| `lost_packets` | `int` | Packets lost for this frame. |
-| `nbytes`, `itemsize` | `int` | Byte length / channel sample size. |
-| `address` | `int` | Buffer address (hand to an external ring). |
-
-**`FrameGrabber`** — continuous grabber (the `Grabber` wrapper adds `configure()`, `frames()` and context-manager support on top of these):
-
-| Method / property | Returns | Description |
-|---|---|---|
-| `open(index)` | `bool` | Enumerate and open device `index`. |
-| `set_node_num(n)` | `None` | SDK buffer-node depth (≥ 3), before `start()`. |
-| `start()` / `stop()` / `close()` | `bool` / `None` / `None` | Begin / end grabbing; close the device. |
-| `wait_for_frame(timeout_ms=1000)` | `Frame \| None` | Block for the latest frame (GIL released). |
-| `is_running`, `frames_received`, `frames_dropped` | `bool`, `int`, `int` | Live status counters. |
-| `payload_size`, `width`, `height`, `pixel_format` | `int` | Current stream geometry. |
-| `set_exposure_time(us)` / `get_exposure_time()` / `get_exposure_time_range()` | `bool` / `float` / `tuple` | Exposure (µs). |
-| `set_gain(db)` / `get_gain()` / `get_gain_range()` | `bool` / `float` / `tuple` | Gain (dB). |
-| `set_frame_rate(fps)` / `get_frame_rate()` / `get_resulting_frame_rate()` / `get_frame_rate_range()` | `bool` / `float` / `float` / `tuple` | Frame rate (fps). |
-| `set_exposure_auto(mode)` / `get_exposure_auto()` | `bool` / `AutoMode` | Auto-exposure mode. |
-| `set_gain_auto(mode)` / `get_gain_auto()` | `bool` / `AutoMode` | Auto-gain mode. |
-| `set_roi(width, height, offset_x=0, offset_y=0)` | `bool` | Set ROI (auto stop/restart; zero-copy preserved). |
-| `get_roi()` / `get_sensor_size()` | `Roi` / `tuple[int, int]` | Current ROI / full sensor size. |
-
-**`Roi`** — read-only: `width`, `height`, `offset_x`, `offset_y` (`int`).
-**`AutoMode`** — enum: `Off`, `Once`, `Continuous`.
-
-## Full example
-
-List devices, start the first camera, read its info, set the exposure, take a
-zero-copy frame, then shut everything down.
-
-```python
-import uc2_hikpy
-from uc2_hikpy import Grabber
-
-# 1. List connected cameras (the SDK is initialised automatically on import).
-devices = uc2_hikpy.list_devices()
-if not devices:
-    raise SystemExit("no HikRobot/MVS camera found")
-
-# 2. Device info.
-info = devices[0]
-print(f"Using {info.model_name}  (SN {info.serial}, {info.transport})")
-
-# 3. Open + start the first device. The context manager opens & starts on entry
-#    and stops & closes on exit (equivalent to cam.start() ... cam.close()).
-with Grabber(index=0, node_num=5) as cam:
-
-    # 4. Set the exposure time (microseconds); auto-exposure is switched Off.
-    cam.set_exposure_time(5000)
-    print("exposure:", cam.get_exposure_time(), "us")
-
-    # 5. Grab the latest frame and access it zero-copy.
-    frame = cam.wait_for_frame(timeout_ms=1000)
-    if frame is not None:
-        img = frame.array               # numpy view: (H, W) or (H, W, 3) uint8
-        print(f"frame #{frame.frame_num}: {img.shape} @ {hex(frame.address)}")
-        # img aliases SDK memory and is valid until the next wait_for_frame();
-        # use frame.copy() if you need to keep it.
-
-# 6. Leaving the 'with' block has stopped grabbing and closed the device;
-#    the SDK is finalised automatically at interpreter exit.
-```
+Quick connection test of a HikRobot camera (grab, preview, snapshot):
+`uv run python -m uc2_cam_py --index 0 --frames 100 --snapshot capture.png`.
+The MVS runtime libraries are located automatically; no `LD_LIBRARY_PATH` needed.
 
 ## Build & run — C++ standalone (Examples)
 
 The terminal tool lives in `Examples/` and is built by the top-level project.
-`-DHIK_BUILD_PYTHON=OFF` skips the Python module, so no pybind11 is needed:
+The `profile` preset (optimised, no Python module, so no pybind11 needed) is the
+simplest way to get it:
 
 ```bash
-cmake -S . -B build-cpp -DHIK_BUILD_PYTHON=OFF
-cmake --build build-cpp --target HikStandAlone -j
-./build-cpp/Examples/HikStandAlone   # interactive: list cameras, pick one, live preview
+cmake --preset profile
+cmake --build --preset profile --target HikStandAlone
+./build/profile/Examples/HikStandAlone   # interactive: list cameras, pick one, live preview
 ```
 
-(The IDE build in `build/` produces the same binary as `build/Examples/HikStandAlone`.)
+(The `debug` preset produces the same binary as `build/debug/Examples/HikStandAlone`.)
 
 At configure time CMake reports which mode it built:
 
@@ -358,10 +243,10 @@ HikStandAlone [options]
 
 ```bash
 # Open camera 0, grab 100 frames, save the first as PNG
-./build-cpp/Examples/HikStandAlone --index 0 --frames 100 --snapshot capture.png
+./build/profile/Examples/HikStandAlone --index 0 --frames 100 --snapshot capture.png
 
 # Headless single grab (writes snapshot.png by default when no window)
-./build-cpp/Examples/HikStandAlone --index 0 --frames 1 --no-display
+./build/profile/Examples/HikStandAlone --index 0 --frames 1 --no-display
 ```
 
 When no preview window is available and you did not pass `--snapshot`, the
@@ -369,26 +254,32 @@ first frame is written to `snapshot.png` so you can still inspect the image.
 
 ## Tests
 
-**Python** (pytest — no camera needed for the unit tests):
+**Python** (pytest). Most interface tests run twice: against the simulated
+camera (always) and against a HikRobot camera (marker `hardware`, skipped when
+none is connected). `display` tests open a preview window and are skipped
+without a display.
 
 ```bash
-uv run pytest                 # import + list_devices smoke tests
-uv run pytest -m hardware     # also runs the capture test (needs a camera)
+uv run pytest -m "not hardware"   # everything that needs no camera
+uv run pytest -m hardware         # the same checks on a real camera
+uv run pytest -m display          # live view via get_last_image()
 ```
 
-**C++** (Catch2 via CTest — off by default, enable with `-DHIK_BUILD_TESTS=ON`):
+**C++** (Catch2 via CTest — every preset builds the tests):
 
 ```bash
-cmake -S core -B build/core -DHIK_BUILD_TESTS=ON
-cmake --build build/core -j
-ctest --test-dir build/core --output-on-failure
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+ctest --preset asan    # same suite under ASan + UBSan + LSan (after building that preset)
+ctest --preset tsan    # same suite under TSan
 ```
 
-The C++ unit tier (error-code mapping, capture options, headless `ImageWindow`,
-SDK init/enumerate, pixel-format mapping, `FrameGrabber` lifecycle) needs no
-camera. Add `-DHIK_ENABLE_HARDWARE_TESTS=ON` to also build the `[hardware]`
-integration tests, which open the first device and grab a frame both directly
-and through `FrameGrabber` (and SKIP themselves when no camera is connected).
+Without presets, the core alone: `cmake -S core -B build/core -DHIK_BUILD_TESTS=ON`
+(off by default there).
+
+The C++ unit tier (ring buffer, camera helpers, logging, the simulated camera
+end to end, error-code mapping, headless `ImageWindow`, SDK init) needs no
+camera. The `[hardware]` tests (built by the presets) open a HikRobot camera
+through `MvsCamera` and `HikCamera` and SKIP themselves when none is connected.
 
 ## Debugging the C++ code from VS Code
 
@@ -397,17 +288,17 @@ and through `FrameGrabber` (and SKIP themselves when no camera is connected).
 | Configuration | Debugger | Breakpoints that work |
 |---|---|---|
 | *Debug test.py* | debugpy | Python only |
-| *Debug C++ (python -m uc2_hikpy)* | gdb (cppdbg) | C++ only |
+| *Debug C++ (python -m uc2_cam_py)* | gdb (cppdbg) | C++ only |
 
-The C++ one launches `.venv/bin/python -m uc2_hikpy` under gdb, so breakpoints in
+The C++ one launches `.venv/bin/python -m uc2_cam_py` under gdb, so breakpoints in
 `core/src/*.cpp` and `bindings/hik_py.cpp` are hit through the whole call chain
 (pybind11 → `runCapture()` → `MvsCamera`). A breakpoint stays "unverified" until
-`import uc2_hikpy` loads the extension, then gdb resolves it — that is expected.
+`import uc2_cam_py` loads the extension, then gdb resolves it — that is expected.
 
-**The catch: `cmake --build build` alone is not enough.** Python does not import
+**The catch: `cmake --build --preset debug` alone is not enough.** Python does not import
 the `_hik*.so` from the build tree. The editable install puts a meta path finder
-at `sys.meta_path[0]` that hard-maps `uc2_hikpy._hik` to a *copy* under
-`.venv/lib/python3.12/site-packages/uc2_hikpy/`, so `PYTHONPATH` cannot redirect
+at `sys.meta_path[0]` that hard-maps `uc2_cam_py._hik` to a *copy* under
+`.venv/lib/python3.12/site-packages/uc2_cam_py/`, so `PYTHONPATH` cannot redirect
 it either. That copy is built `Release` and **stripped** — gdb finds no symbols
 in it.
 
@@ -417,14 +308,14 @@ Rebuild it as a Debug build instead:
 SKBUILD_CMAKE_BUILD_TYPE=Debug uv pip install -e . --no-build-isolation
 ```
 
-This is what the `uc2_hikpy: Debug-Build (editable reinstall)` task in
+This is what the `uc2_cam_py: Debug-Build (editable reinstall)` task in
 `.vscode/tasks.json` runs, and the C++ configuration invokes it as a
 `preLaunchTask` — so every debug session picks up your latest C++ changes.
 `Debug` also disables stripping on its own (scikit-build-core only strips for
 `Release`/`MinSizeRel`), so no extra flag is needed. Verify with:
 
 ```bash
-file .venv/lib/python3.12/site-packages/uc2_hikpy/_hik.cpython-312-*.so
+file .venv/lib/python3.12/site-packages/uc2_cam_py/_hik.cpython-312-*.so
 # want: "with debug_info, not stripped"
 ```
 
@@ -432,8 +323,9 @@ To go back to an optimised module, reinstall without the variable:
 `uv pip install -e . --no-build-isolation`.
 
 For problems that do not involve Python at all, debugging
-`build/Examples/HikStandAlone` directly is simpler — build it with
-`-DCMAKE_BUILD_TYPE=Debug` and point a `cppdbg` launch at the binary.
+`build/debug/Examples/HikStandAlone` directly is simpler — the launch
+configuration "Debug C++ (CMake launch target)" debugs whichever target is
+selected in the CMake Tools status bar, in the active preset.
 
 ## Notes / troubleshooting
 
@@ -457,8 +349,8 @@ For problems that do not involve Python at all, debugging
     `sudo /opt/MVS/bin/set_usbfs_memory_size.sh` for that.
 - **Verify against Hik's own tool**: `/opt/MVS/bin/MVS` is the full GUI client
   and is handy to confirm the camera is reachable independently of this tool.
-- The tool sets `TriggerMode = Off` (free-run). To test hardware triggering,
-  extend `MvsCamera::open()` accordingly.
+- The camera runs with `TriggerMode = Off` (free-run); the `trigger` setting is a
+  placeholder for now.
 
 
 # FAQ
@@ -467,9 +359,10 @@ For problems that do not involve Python at all, debugging
 
 lost_packets` isn't an action — it's a **read-only diagnostic counter** attached to each frame. It reports **how many transport packets were lost while that specific frame was being transferred from the camera to the host**.
 
-It comes straight from the SDK's per-frame metadata (`MV_FRAME_OUT_INFO_EX.nLostPacket`), which we surface unchanged:
-- populated in [FrameGrabber.cpp](core/src/FrameGrabber.cpp) — `v.lostPacket = f.stFrameInfo.nLostPacket;`
-- exposed as `Frame.lost_packets` in [hik_py.cpp](bindings/hik_py.cpp)
+It comes straight from the SDK's per-frame metadata (`MV_FRAME_OUT_INFO_EX.nLostPacket`).
+The previous `Frame.lost_packets` property was removed together with the old
+`Grabber` API; the new interface does not expose it yet (a candidate for the
+per-frame header).
 
 ### What it means practically
 
@@ -488,14 +381,14 @@ One caveat: it reflects packet loss the SDK is aware of at the transport layer �
 
 It's a **native camera setting** — real hardware/firmware frame-rate control, not client-side frame filtering.
 
-`set_frame_rate(fps)` writes the camera's own GenICam nodes ([MvsCamera.cpp](core/src/MvsCamera.cpp)):
+`cam.frame_rate_per_sec = fps` writes the camera's own GenICam nodes ([HikCamera.cpp](core/src/HikCamera.cpp)):
 
 ```cpp
 setBoolNode("AcquisitionFrameRateEnable", true);   // let firmware regulate the rate
 setFloatNode("AcquisitionFrameRate", fps);         // target rate, timed by the sensor
 ```
 
-There is **no software throttling** anywhere in the grabber. The acquisition path is strictly `OneByOne` — every frame the camera produces is delivered; nothing is dropped or sampled to hit a rate. (`frames_dropped` counts only frames superseded because *your consumer* was slow, which is unrelated to rate control.)
+There is **no software throttling** anywhere. The acquisition path is strictly `OneByOne` — every frame the camera produces is copied into the ring buffer; nothing is dropped or sampled to hit a rate.
 
 ### What the camera actually does
 - `AcquisitionFrameRateEnable = true` switches the sensor from free-running at its maximum to **firmware-regulated timing**; it paces exposures/readouts to hit your target. With it `false`, the camera runs as fast as the current exposure/readout allow.
@@ -504,4 +397,4 @@ There is **no software throttling** anywhere in the grabber. The acquisition pat
 ### Important caveat: it's bounded by physics
 The requested rate can't exceed what **exposure time + sensor readout + ROI + interface bandwidth** allow. Example: a 50 ms exposure caps you near ~20 fps no matter what you request — ask for 30 and the camera silently regulates to what's achievable.
 
-That's exactly why I also exposed **`get_resulting_frame_rate()`** (the read-only `ResultingFrameRate` node): `get_frame_rate()` returns what you *asked for*, while `get_resulting_frame_rate()` returns what the camera will *actually* deliver given the current exposure/ROI. If they differ, exposure (or bandwidth) is the limiter — lower the exposure to reach a higher rate.
+`cam.frame_rate_per_sec = None` removes the limit; reading `frame_rate_per_sec` then returns the read-only `ResultingFrameRate` node, i.e. what the camera *actually* delivers given the current exposure/ROI. With a limit set, it returns the configured target.
