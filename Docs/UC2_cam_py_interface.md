@@ -55,7 +55,7 @@ with uc2_cam_py.create_camera(vendor="HikRobot", connection_type="USB3",
 ```python
 create_camera(vendor=None, connection_type=None, serial=None, index=None, buffer_size=None,
               start_on_init=False, image_file_path=None, store_image_data=True, logger=None,
-              **vendor_options) -> Camera
+              debug_window=False, **vendor_options) -> Camera
 ```
 
 | Parameter | Type | Default | Description |
@@ -69,6 +69,7 @@ create_camera(vendor=None, connection_type=None, serial=None, index=None, buffer
 | `image_file_path` | `str \| PathLike \| None` | `None` → `defaults.IMAGE_FILE_PATH` (`~/UC2_recordings`) | Directory for the recorded data; created if missing. |
 | `store_image_data` | `bool` | `True` | Write every image to disk (in `image_file_path`). |
 | `logger` | logger-like `\| None` | `None` → `logging.getLogger("uc2_cam_py")` | Object with `error`, `warning` (or `warn`), `info`, `debug` methods. |
+| `debug_window` | `bool` | `False` | *Addition.* Show the newest image in a window until `close()` (X11, 8-bit grey view, contrast stretched). The **only** way to open a window. Without X11: ERROR, no exception, the camera works without the window. |
 | `**vendor_options` | | | *Addition.* Vendor-specific extras, see [§8](#8-vendors). |
 
 **Camera selection:**
@@ -95,6 +96,7 @@ keep their current values. The camera is put into free-run mode (no trigger).
 | `store_image_data` and `image_file_path` cannot be created | ERROR + `OSError` |
 | `store_image_data` and free disk space < one full buffer | ERROR + `OSError(ENOSPC)` |
 | `store_image_data` (otherwise) | INFO with the estimated recording time until the disk is full |
+| `debug_window` and no X11 (build without X11, no `DISPLAY`) | ERROR, **no exception**; the camera works without the window |
 
 **Errors:**
 
@@ -295,6 +297,10 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - **GIL release.** `start`, `stop`, `close` and ROI/binning changes release the GIL while they
   wait.
 - **Acquisition.** The image copy runs on a C++ thread without the GIL.
+- **Debug window.** With `debug_window=True` a Python daemon thread owns the window (Xlib is not
+  thread-safe here): about 30 times per second it reads `get_last_image()` and draws new images.
+  It holds the GIL only for the conversion to 8-bit. Closing the window by hand stops only the
+  window; `close()` of the camera ends the thread.
 
 ### 7.8 Error policy
 
@@ -351,8 +357,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 | Name | Description |
 |---|---|
 | `uc2_cam_py.list_devices(connection_type=None)` | Connected HikRobot cameras (`DeviceInfo`: transport, model_name, serial, user_name, ip). |
-| `uc2_cam_py.run_connection_test(...)` / `python -m uc2_cam_py` | Quick diagnostic of a HikRobot camera (grab, preview, snapshot). |
-| `uc2_cam_py.preview.PreviewWindow` | Simple live view: `win.show(cam.get_last_image())` until the window is closed (X11, no extra dependency). |
+| `uc2_cam_py.run_connection_test(index=-1, frames=0, snapshot="")` / `python -m uc2_cam_py` | Quick diagnostic of a HikRobot camera (grab, snapshot; no window — without `snapshot` the first image goes to `snapshot.png`). |
 | `uc2_cam_py.defaults` | Default values (vendor, buffer size, warning threshold, recording path); to be overridden by `config.yaml` later. |
 | `uc2_cam_py.vendors()` | Available vendor names. |
 
@@ -390,7 +395,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - `ImgData.sequence`, `ImgData.slot`, `ImgData.is_valid()`,
 - `ImgMetaData.dtype`, `ImgMetaData.wall_time_ns()`,
 - `can_set_roi`, `model`, `pixel_format`, `image_size`, `recording_file`,
-- `vendor_options`, `list_devices`, the `preview` helper,
+- `vendor_options`, `list_devices`, `debug_window`,
 - the settings JSON in the session comment.
 
 ## 11. Known limitations

@@ -29,6 +29,29 @@ wheel.packages = ["python/uc2_cam_py"]
 # (HikStandAlone would otherwise be installed into the wheel's bin/).
 HIK_BUILD_EXAMPLES = "OFF"
 
+[tool.ruff]
+# target-version follows requires-python (3.12).
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["UP", "PYI", "RUF"]
+ignore = [
+    "PYI021",  # _hik.pyi carries the docstrings that Pylance shows on hover for the compiled module
+    "RUF022",  # __all__ in __init__.py is grouped by topic, not sorted
+]
+# pep8-naming is not selected here but may be in the editor; keep its noqa comments.
+external = ["N"]
+
+[tool.ruff.lint.isort]
+# The package lives under python/, so Ruff cannot detect it; conftest is the tests' helper module.
+known-first-party = ["uc2_cam_py"]
+known-local-folder = ["conftest"]
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-comprehensions]
+# dict(name=value) reads as keyword arguments in the parametrised test tables.
+allow-dict-calls-with-keyword-arguments = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

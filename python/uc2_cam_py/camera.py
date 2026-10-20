@@ -16,31 +16,32 @@ import math
 import numbers
 import os
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, Union
+from types import TracebackType
+from typing import Any, ClassVar, Self
 
-from . import _logging, _resources, defaults
+from . import _logging, _preview, _resources, defaults
 from .data import ImgData, ImgMetaData
 
-PathLike = Union[str, "os.PathLike[str]"]
-Range = Tuple[float, float]
-Roi = Tuple[int, int, int, int]
+PathLike = str | os.PathLike[str]
+Range = tuple[float, float]
+Roi = tuple[int, int, int, int]
 
 #: Connection types accepted by :func:`create_camera` (canonical spelling).
-CONNECTION_TYPES: Tuple[str, ...] = ("USB3", "GigE")
+CONNECTION_TYPES: tuple[str, ...] = ("USB3", "GigE")
 
 #: Binning factors of the interface specification.
-BINNING_FACTORS: Tuple[int, ...] = (1, 2, 4)
+BINNING_FACTORS: tuple[int, ...] = (1, 2, 4)
 
-_VENDORS: Dict[str, Type["Camera"]] = {}
+_VENDORS: dict[str, type[Camera]] = {}
 
 
-def register_vendor(cls: Type["Camera"]) -> Type["Camera"]:
+def register_vendor(cls: type[Camera]) -> type[Camera]:
     """Class decorator: make ``cls`` available as ``create_camera(vendor=cls.VENDOR)``."""
     _VENDORS[cls.VENDOR.lower()] = cls
     return cls
 
 
-def vendors() -> List[str]:
+def vendors() -> list[str]:
     """Names of the available vendors (e.g. ``["HikRobot", "Simulated"]``)."""
     return [c.VENDOR for c in _VENDORS.values()]
 
@@ -51,10 +52,6 @@ def _is_real(value: Any) -> bool:
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool)
-
-
-def _fmt(value: Optional[float]) -> str:
-    return "n/a" if value is None else f"{value:.6g}"
 
 
 class Camera:
@@ -78,13 +75,15 @@ class Camera:
         *,
         buffer_size: int,
         start_on_init: bool,
-        image_file_path: Optional[PathLike],
+        image_file_path: PathLike | None,
         store_image_data: bool,
         logger: _logging.LoggerAdapter,
+        debug_window: bool,
     ) -> None:
         self._backend = backend
         self._log = logger
         self._closed = False
+        self._debug_window: _preview.DebugWindow | None = None
         self._buffer_size = int(buffer_size)
         self._store_image_data = bool(store_image_data)
         path = defaults.IMAGE_FILE_PATH if image_file_path is None else image_file_path
@@ -113,20 +112,24 @@ class Camera:
         self._log_init_info()
         if start_on_init:
             self.start()
+        if debug_window:
+            self._debug_window = _preview.DebugWindow(
+                self.get_last_image, f"uc2_cam_py debug - {self.VENDOR} {self.model} SN {self.serial}", self._log
+            )
 
     @classmethod
     def _create_backend(
-        cls, connection_type: Optional[str], serial: Optional[str], index: Optional[int], **options: Any
+        cls, connection_type: str | None, serial: str | None, index: int | None, **options: Any
     ) -> Any:
         raise NotImplementedError
 
-    def _model_info(self) -> Optional[Dict[str, Any]]:
+    def _model_info(self) -> dict[str, Any] | None:
         """Static model data (pixel_pitch_um, pixel_size_um, pixel_count) or None."""
         return None
 
     def _log_init_info(self) -> None:
         b = self._backend
-        storable, channels, itemsize, fmt = b.pixel_layout()
+        _, channels, itemsize, fmt = b.pixel_layout()
         size = b.image_size() or (0, 0)
         frame_bytes = size[0] * size[1] * channels * itemsize
         self._log.info(
@@ -242,25 +245,25 @@ class Camera:
         return bool(self._backend.can_set_roi())
 
     @property
-    def range_exposure_time_ms(self) -> Optional[Range]:
+    def range_exposure_time_ms(self) -> Range | None:
         """tuple[float, float] | None: (min, max) exposure time in ms; None if not settable."""
         r = self._backend.exposure_range_ms()
         return None if r is None else (max(0.0, float(r[0])), float(r[1]))
 
     @property
-    def range_frame_rate_per_sec(self) -> Optional[Range]:
+    def range_frame_rate_per_sec(self) -> Range | None:
         """tuple[float, float] | None: (min, max) frame rate in 1/s; None if not settable."""
         r = self._backend.frame_rate_range()
         return None if r is None else (max(0.0, float(r[0])), float(r[1]))
 
     @property
-    def range_gain_db(self) -> Optional[Range]:
+    def range_gain_db(self) -> Range | None:
         """tuple[float, float] | None: (min, max) gain in dB; None if not settable."""
         r = self._backend.gain_range_db()
         return None if r is None else (max(0.0, float(r[0])), float(r[1]))
 
     @property
-    def range_binning(self) -> List[int]:
+    def range_binning(self) -> list[int]:
         """list[int]: Allowed symmetric binning factors (subset of 1, 2, 4); [1] if fixed."""
         if not self.can_set_binning:
             return [1]
@@ -268,19 +271,19 @@ class Camera:
         return values or [1]
 
     @property
-    def pixel_count(self) -> Tuple[int, int]:
+    def pixel_count(self) -> tuple[int, int]:
         """tuple[int, int]: Full (unbinned) sensor resolution (x, y) in pixels."""
         return self._pixel_count
 
     @property
-    def pixel_pitch_um(self) -> Optional[Tuple[float, float]]:
+    def pixel_pitch_um(self) -> tuple[float, float] | None:
         """tuple[float, float] | None: Centre-to-centre pixel distance (x, y) in um."""
         info = self._model_info()
         pitch = None if info is None else info.get("pixel_pitch_um")
         return None if pitch is None else (float(pitch[0]), float(pitch[1]))
 
     @property
-    def pixel_size_um(self) -> Optional[Tuple[float, float]]:
+    def pixel_size_um(self) -> tuple[float, float] | None:
         """tuple[float, float] | None: Photosensitive pixel width (x, y) in um; pitch if unknown."""
         info = self._model_info()
         size = None if info is None else info.get("pixel_size_um")
@@ -327,20 +330,20 @@ class Camera:
         return str(self._backend.pixel_layout()[3])
 
     @property
-    def image_size(self) -> Tuple[int, int]:
+    def image_size(self) -> tuple[int, int]:
         """tuple[int, int]: Current image size (width, height) after ROI and binning (addition)."""
         size = self._backend.image_size() or (0, 0)
         return (int(size[0]), int(size[1]))
 
     @property
-    def recording_file(self) -> Optional[str]:
+    def recording_file(self) -> str | None:
         """str | None: Path of the current/last ``.uc2rb`` file (addition to the spec)."""
         path = self._backend.recording_file()
         return path or None
 
     # --------------------------------------------------------------- settings
 
-    def _clamp(self, name: str, value: float, rng: Optional[Range], unit: str) -> float:
+    def _clamp(self, name: str, value: float, rng: Range | None, unit: str) -> float:
         if rng is None:
             return value
         clamped = min(max(value, rng[0]), rng[1])
@@ -351,12 +354,12 @@ class Camera:
             )
         return clamped
 
-    def _report_applied(self, name: str, requested: float, applied: Optional[float], unit: str) -> None:
+    def _report_applied(self, name: str, requested: float, applied: float | None, unit: str) -> None:
         if applied is not None and not math.isclose(requested, applied, rel_tol=1e-3, abs_tol=1e-6):
             self._log.info(f"{name}: camera applied {applied:.6g} {unit} (nearest valid value to {requested:.6g})")
 
     @property
-    def exposure_time_ms(self) -> Optional[float]:
+    def exposure_time_ms(self) -> float | None:
         """float | None: Exposure (integration) time in ms.
 
         Reading returns the camera's actual value (None if not readable).
@@ -366,7 +369,7 @@ class Camera:
         return self._backend.get_exposure_ms()
 
     @exposure_time_ms.setter
-    def exposure_time_ms(self, value: Optional[float]) -> None:
+    def exposure_time_ms(self, value: float | None) -> None:
         self._require_open()
         if value is not None and not _is_real(value):
             raise TypeError(f"exposure_time_ms must be a number or None, got {type(value).__name__}")
@@ -387,7 +390,7 @@ class Camera:
         self._report_applied("exposure_time_ms", v, self._backend.get_exposure_ms(), "ms")
 
     @property
-    def frame_rate_per_sec(self) -> Optional[float]:
+    def frame_rate_per_sec(self) -> float | None:
         """float | None: Frame rate in 1/s.
 
         Reading returns the configured rate, or the rate the camera actually
@@ -398,7 +401,7 @@ class Camera:
         return self._backend.get_frame_rate()
 
     @frame_rate_per_sec.setter
-    def frame_rate_per_sec(self, value: Optional[float]) -> None:
+    def frame_rate_per_sec(self, value: float | None) -> None:
         self._require_open()
         if value is not None and not _is_real(value):
             raise TypeError(f"frame_rate_per_sec must be a number or None, got {type(value).__name__}")
@@ -419,7 +422,7 @@ class Camera:
         self._report_applied("frame_rate_per_sec", v, self._backend.get_frame_rate(), "1/s")
 
     @property
-    def gain_db(self) -> Optional[float]:
+    def gain_db(self) -> float | None:
         """float | None: Analog gain in dB.
 
         Writing clamps to :attr:`range_gain_db`; ``None`` switches to automatic
@@ -428,7 +431,7 @@ class Camera:
         return self._backend.get_gain_db()
 
     @gain_db.setter
-    def gain_db(self, value: Optional[float]) -> None:
+    def gain_db(self, value: float | None) -> None:
         self._require_open()
         if value is not None and not _is_real(value):
             raise TypeError(f"gain_db must be a number or None, got {type(value).__name__}")
@@ -460,7 +463,7 @@ class Camera:
         return 1 if b is None else int(b)
 
     @binning.setter
-    def binning(self, value: Optional[int]) -> None:
+    def binning(self, value: int | None) -> None:
         self._require_open()
         if value is None:
             value = 1
@@ -494,7 +497,7 @@ class Camera:
             self._log.error(f"trigger={value!r} is not supported yet - the camera stays in free-run mode")
 
     @property
-    def roi(self) -> Optional[Roi]:
+    def roi(self) -> Roi | None:
         """tuple[int, int, int, int] | None: (x, y, width, height) in unbinned sensor pixels.
 
         ``None`` means the complete sensor. Writing clamps the region to the
@@ -510,20 +513,23 @@ class Camera:
         return roi
 
     @roi.setter
-    def roi(self, value: Optional[Roi]) -> None:
+    def roi(self, value: Roi | None) -> None:
         self._require_open()
+        rect: Roi | None = None
         if value is not None:
             if not isinstance(value, (tuple, list)) or len(value) != 4 or not all(_is_int(v) for v in value):
                 raise TypeError("roi must be None or a tuple (x, y, width, height) of 4 ints")
             x, y, w, h = (int(v) for v in value)
             if x < 0 or y < 0 or w <= 0 or h <= 0:
                 raise ValueError(f"roi needs x, y >= 0 and width, height > 0, got {tuple(value)}")
+            rect = (x, y, w, h)
         if not self.can_set_roi:
             self._log.warning("roi cannot be set on this camera - ignored")
             return
-        if value is None:
+        if rect is None:
             ok = self._backend.reset_roi()
         else:
+            x, y, w, h = rect
             px, py = self._pixel_count
             cx, cy = min(x, px - 1), min(y, py - 1)
             cw, ch = min(w, px - cx), min(h, py - cy)
@@ -538,7 +544,7 @@ class Camera:
 
     # ---------------------------------------------------------------- methods
 
-    def get_last_image(self) -> Optional[ImgData]:
+    def get_last_image(self) -> ImgData | None:
         """Return the most recently recorded image.
 
         Returns:
@@ -574,7 +580,7 @@ class Camera:
             raise LookupError(f"buffer slot {index} holds no completely recorded image")
         return ImgData._from_handle(handle)
 
-    def get_image_info(self) -> Optional[ImgMetaData]:
+    def get_image_info(self) -> ImgMetaData | None:
         """Return the metadata of the current (or last) recording session.
 
         Returns:
@@ -634,6 +640,9 @@ class Camera:
         """Stop and release the camera. Images already read stay valid."""
         if self._closed:
             return
+        if self._debug_window is not None:   # before the backend: the window thread reads from it
+            self._debug_window.close()
+            self._debug_window = None
         self._backend.close()
         self._closed = True
         _logging.flush()   # the core's shutdown messages first, then ours
@@ -641,10 +650,12 @@ class Camera:
         if _logging.active_logger() is self._log:
             _logging.set_active_logger(None)
 
-    def __enter__(self) -> "Camera":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
         self.close()
 
     def __repr__(self) -> str:
@@ -653,15 +664,16 @@ class Camera:
 
 
 def create_camera(
-    vendor: Optional[str] = None,
-    connection_type: Optional[str] = None,
-    serial: Optional[str] = None,
-    index: Optional[int] = None,
-    buffer_size: Optional[int] = None,
+    vendor: str | None = None,
+    connection_type: str | None = None,
+    serial: str | None = None,
+    index: int | None = None,
+    buffer_size: int | None = None,
     start_on_init: bool = False,
-    image_file_path: Optional[PathLike] = None,
+    image_file_path: PathLike | None = None,
     store_image_data: bool = True,
     logger: Any = None,
+    debug_window: bool = False,
     **vendor_options: Any,
 ) -> Camera:
     """Open a camera and return it as a :class:`Camera`.
@@ -681,6 +693,9 @@ def create_camera(
         store_image_data: Write every image to disk (in ``image_file_path``).
         logger: Object with ``error``, ``warning``, ``info``, ``debug``
             methods; None -> ``logging.getLogger("uc2_cam_py")``.
+        debug_window: Show the newest image in a window until the camera is
+            closed - the only way to open one. Without X11 an error is logged
+            and the camera works without the window.
         **vendor_options: Vendor-specific extras (Simulated: ``pixel_format``,
             ``sensor_width``, ``sensor_height``, ``frame_rate``).
 
@@ -723,7 +738,11 @@ def create_camera(
         raise TypeError("buffer_size must be an int")
     if buffer_size < 2:
         raise ValueError(f"buffer_size must be >= 2, got {buffer_size}")
-    for name, flag in (("start_on_init", start_on_init), ("store_image_data", store_image_data)):
+    for name, flag in (
+        ("start_on_init", start_on_init),
+        ("store_image_data", store_image_data),
+        ("debug_window", debug_window),
+    ):
         if not isinstance(flag, bool):
             raise TypeError(f"{name} must be a bool")
     if image_file_path is not None and not isinstance(image_file_path, (str, os.PathLike)):
@@ -744,4 +763,5 @@ def create_camera(
         image_file_path=image_file_path,
         store_image_data=store_image_data,
         logger=adapter,
+        debug_window=debug_window,
     )

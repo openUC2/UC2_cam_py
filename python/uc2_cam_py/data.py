@@ -8,7 +8,7 @@ Both are plain ``@dataclass`` types, importable as
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 import numpy as np
 
@@ -54,7 +54,7 @@ class ImgData:
         return True if self._handle is None else bool(self._handle.still_valid())
 
     @classmethod
-    def _from_handle(cls, handle: Any) -> "ImgData":
+    def _from_handle(cls, handle: Any) -> ImgData:
         before = int(handle.ts_before_ns)
         after = int(handle.ts_after_ns)
         return cls(
@@ -129,5 +129,5 @@ class ImgMetaData:
         return self.start_wall_ns + (monotonic_ns - self.start_mono_ns)
 
     @classmethod
-    def _from_dict(cls, d: Optional[Dict[str, Any]]) -> Optional["ImgMetaData"]:
+    def _from_dict(cls, d: dict[str, Any] | None) -> ImgMetaData | None:
         return None if d is None else cls(**d)

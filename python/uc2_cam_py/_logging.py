@@ -16,12 +16,15 @@ import atexit
 import itertools
 import logging
 import threading
-from typing import Any, Optional
+from collections.abc import Callable
+from typing import Any
 
 from . import _hik, defaults
 
 # Printable on purpose: the message passes through a C string, a NUL would cut it.
 _FLUSH_PREFIX = "[uc2_cam_py.flush]"
+
+LogFn = Callable[[str], Any]
 
 
 class LoggerAdapter:
@@ -33,26 +36,26 @@ class LoggerAdapter:
     """
 
     def __init__(self, target: Any) -> None:
-        warning = getattr(target, "warning", None) or getattr(target, "warn", None)
-        missing = [
-            name
-            for name, fn in (
-                ("error", getattr(target, "error", None)),
-                ("warning", warning),
-                ("info", getattr(target, "info", None)),
-                ("debug", getattr(target, "debug", None)),
-            )
-            if not callable(fn)
-        ]
-        if missing:
+        def find(*names: str) -> LogFn | None:
+            for name in names:
+                fn = getattr(target, name, None)
+                if callable(fn):
+                    return fn
+            return None
+
+        error, warning, info, debug = find("error"), find("warning", "warn"), find("info"), find("debug")
+        # One explicit None check (not a comprehension) so type checkers see all four as callable.
+        if error is None or warning is None or info is None or debug is None:
+            found = {"error": error, "warning": warning, "info": info, "debug": debug}
+            missing = [name for name, fn in found.items() if fn is None]
             raise TypeError(
                 "logger must provide error/warning/info/debug methods; missing: " + ", ".join(missing)
             )
         self.target = target
-        self.error = target.error
-        self.warning = warning
-        self.info = target.info
-        self.debug = target.debug
+        self.error: LogFn = error
+        self.warning: LogFn = warning
+        self.info: LogFn = info
+        self.debug: LogFn = debug
 
     def log(self, level: int, message: str) -> None:
         """Dispatch by ``logging`` level number."""
@@ -72,15 +75,15 @@ def package_logger() -> LoggerAdapter:
 
 
 _lock = threading.Lock()
-_active: Optional[LoggerAdapter] = None
-_thread: Optional[threading.Thread] = None
+_active: LoggerAdapter | None = None
+_thread: threading.Thread | None = None
 _stop = threading.Event()
 _flush_ids = itertools.count()
-_flush_seen: "set[int]" = set()
+_flush_seen: set[int] = set()
 _flush_cv = threading.Condition()
 
 
-def set_active_logger(adapter: Optional[LoggerAdapter]) -> None:
+def set_active_logger(adapter: LoggerAdapter | None) -> None:
     """Route C++ messages to ``adapter`` (None: back to the package logger)."""
     global _active
     with _lock:

@@ -14,14 +14,14 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
 
 import pytest
 
 import uc2_cam_py
 from uc2_cam_py import _logging
-from uc2_cam_py.preview import display_available
+from uc2_cam_py._preview import display_available
 
 #: Small, fast simulated camera used by most tests.
 SIM_OPTIONS = dict(sensor_width=400, sensor_height=200, frame_rate=100.0)
@@ -32,7 +32,7 @@ class RecordingLogger:
     """Logger-like object (deliberately not a logging.Logger) that records calls."""
 
     def __init__(self) -> None:
-        self.records: List[Tuple[str, str]] = []
+        self.records: list[tuple[str, str]] = []
         self._lock = threading.Lock()
 
     def _add(self, level: str, message: str) -> None:
@@ -51,7 +51,7 @@ class RecordingLogger:
     def debug(self, message: str) -> None:
         self._add("DEBUG", message)
 
-    def messages(self, level: Optional[str] = None) -> List[str]:
+    def messages(self, level: str | None = None) -> list[str]:
         """Messages so far (C++ messages included: the forwarder is flushed first)."""
         _logging.flush()
         with self._lock:
@@ -85,7 +85,7 @@ def display_ready() -> bool:
     return display_available() and bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if display_ready():
         return
     skip = pytest.mark.skip(reason="no display (DISPLAY/WAYLAND_DISPLAY) or no X11 build")
@@ -116,7 +116,7 @@ def _open(vendor: str, logger: RecordingLogger, recording_dir: Path, **kwargs) -
 @pytest.fixture
 def open_camera(rec_logger: RecordingLogger, recording_dir: Path):
     """Factory ``open_camera(vendor="Simulated", **create_camera_kwargs)``; closes all at the end."""
-    opened: List[uc2_cam_py.Camera] = []
+    opened: list[uc2_cam_py.Camera] = []
 
     def factory(vendor: str = "Simulated", **kwargs) -> uc2_cam_py.Camera:
         if vendor == "HikRobot" and not hik_camera_connected():

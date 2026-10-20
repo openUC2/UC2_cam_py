@@ -20,19 +20,13 @@ def main() -> int:
     parser.add_argument("-i", "--index", type=int, default=-1,
                         help="device index (default: -1 = prompt)")
     parser.add_argument("-n", "--frames", type=int, default=0,
-                        help="stop after N frames (default: 0 = until Enter / window close)")
+                        help="stop after N frames (default: 0 = until Enter)")
     parser.add_argument("-s", "--snapshot", default="",
-                        help="save the first grabbed frame to PATH (.bmp/.jpg/.png/.tif)")
-    parser.add_argument("--no-display", action="store_true",
-                        help="do not open a preview window (headless)")
+                        help="save the first grabbed frame to PATH (.bmp/.jpg/.png/.tif; "
+                             "default: snapshot.png)")
     args = parser.parse_args()
 
-    return uc2_cam_py.run_connection_test(
-        index=args.index,
-        frames=args.frames,
-        snapshot=args.snapshot,
-        display=not args.no_display,
-    )
+    return uc2_cam_py.run_connection_test(index=args.index, frames=args.frames, snapshot=args.snapshot)
 
 
 if __name__ == "__main__":

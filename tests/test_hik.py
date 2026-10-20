@@ -13,9 +13,12 @@ The module also stays runnable as a manual smoke script:
 
 from __future__ import annotations
 
-import pytest
-import uc2_cam_py
 import logging
+
+import pytest
+
+import uc2_cam_py
+
 
 def test_import_and_version() -> None:
     """The package imports and exposes the expected public API."""
@@ -37,7 +40,7 @@ def test_run_connection_test() -> None:
     devices = uc2_cam_py.list_devices()
     if not devices:
         pytest.skip("no HikRobot/MVS camera connected")
-    rc = uc2_cam_py.run_connection_test(index=0, frames=10, snapshot="snapshot.png", display=False)
+    rc = uc2_cam_py.run_connection_test(index=0, frames=10, snapshot="snapshot.png")
     assert rc == 0
 
 
@@ -55,9 +58,8 @@ def main() -> int:
         log.info("No cameras connected - nothing to start.")
         return 0
 
-    # Grab a few frames, show the preview window (if available) and save the
-    # first frame to snapshot.png.
-    return uc2_cam_py.run_connection_test(index=0, frames=50, snapshot="snapshot.png", display=True)
+    # Grab a few frames and save the first one to snapshot.png.
+    return uc2_cam_py.run_connection_test(index=0, frames=50, snapshot="snapshot.png")
 
 def setLogger() -> None:
     """Set up logging for the smoke test.
@@ -66,14 +68,14 @@ def setLogger() -> None:
     """
 
     import logging.config
-    import os;
+    import os
     LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
 
     logging.config.dictConfig({
         "version": 1,
-        "diable_existing_loggers": False, 
+        "disable_existing_loggers": False,
         "formatters": {"std": {"format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s"}},
         "handlers": {
             "console": {"class": "logging.StreamHandler", "formatter": "std"},

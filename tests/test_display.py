@@ -1,9 +1,10 @@
-"""Live display of camera images through get_last_image().
+"""Live view of camera images: ``create_camera(..., debug_window=True)``.
 
-The ``display`` tests open a preview window and show the newest image for a
-few seconds (``UC2_DISPLAY_SECONDS``, default 5). With the simulated camera the
-Gaussian spot walks over the sensor in four rows. They are skipped without a
-display. ``-m "display and hardware"`` runs the same on a real camera.
+The ``display`` tests open the debug window and let it show the newest image for
+a few seconds (``UC2_DISPLAY_SECONDS``, default 5). With the simulated camera
+the Gaussian spot walks over the sensor in four rows. They are skipped without a
+display. ``-m "display and hardware"`` runs the same on a real camera. The other
+tests need no display.
 
     UC2_DISPLAY_SECONDS=30 uv run pytest -m display tests/test_display.py
 """
@@ -17,31 +18,23 @@ import numpy as np
 import pytest
 
 from uc2_cam_py import ImgData
-from uc2_cam_py.preview import PreviewWindow, show, to_display
+from uc2_cam_py._preview import to_display
 
 from conftest import hik_camera_connected, wait_for_frames
 
 SECONDS = float(os.environ.get("UC2_DISPLAY_SECONDS", "5"))
 
 
-def _live_view(cam, title: str) -> set:
-    """Show get_last_image() in a window for SECONDS; return the sequences shown."""
-    win = PreviewWindow(960, 600, title)
-    if not win.is_valid:
-        pytest.skip("preview window could not be opened")
+def _live_view(cam) -> int:
+    """Record for SECONDS while the debug window shows the images; return how many it drew."""
+    window = cam._debug_window
+    if window is None or not window.opened:
+        pytest.skip("debug window could not be opened")
     cam.start()
     wait_for_frames(cam, 1)
-    shown = set()
-    end = time.monotonic() + SECONDS
-    while time.monotonic() < end:
-        img = cam.get_last_image()
-        if img is not None:
-            if not show(img, win):
-                break                   # window closed by the user
-            shown.add(img.sequence)
-        time.sleep(0.02)
+    time.sleep(SECONDS)
     cam.stop()
-    return shown
+    return window.frames_shown
 
 
 # ------------------------------------------------------------ without display
@@ -66,30 +59,45 @@ def test_to_display_accepts_imgdata_rgb_and_flat_images() -> None:
         to_display(np.zeros(5), 10, 10)
 
 
+def test_no_debug_window_by_default(open_camera) -> None:
+    assert open_camera()._debug_window is None
+
+
+def test_debug_window_without_display_logs_an_error(open_camera, rec_logger, monkeypatch) -> None:
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    cam = open_camera(debug_window=True)                  # must not raise
+    assert not cam._debug_window.opened
+    assert rec_logger.has("ERROR", "debug_window=True")
+    cam.start()
+    wait_for_frames(cam, 5)                               # the camera works without the window
+
+
 # ---------------------------------------------------------------- with display
 
 @pytest.mark.display
-def test_live_view_of_the_simulated_camera(open_camera) -> None:
-    cam = open_camera(sensor_width=1920, sensor_height=1200, frame_rate=10.0)
-    shown = _live_view(cam, "uc2_cam_py - Simulated, full sensor")
-    assert len(shown) >= min(10, int(SECONDS * 10 * 0.5))
+def test_debug_window_shows_the_simulated_camera(open_camera) -> None:
+    cam = open_camera(sensor_width=1920, sensor_height=1200, frame_rate=10.0, debug_window=True)
+    window = cam._debug_window
+    assert _live_view(cam) >= min(10, int(SECONDS * 10 * 0.5))
+    cam.close()
+    assert cam._debug_window is None
+    assert not window._thread.is_alive()                 # close() ends the window thread
 
 
 @pytest.mark.display
-def test_live_view_with_roi_and_binning(open_camera) -> None:
-    cam = open_camera(sensor_width=1920, sensor_height=1200, frame_rate=10.0)
+def test_debug_window_with_roi_and_binning(open_camera) -> None:
+    cam = open_camera(sensor_width=1920, sensor_height=1200, frame_rate=10.0, debug_window=True)
     cam.roi = (192, 150, 1536, 900)
     cam.binning = 2
-    shown = _live_view(cam, "uc2_cam_py - Simulated, ROI + binning 2")
-    assert len(shown) >= min(10, int(SECONDS * 10 * 0.5))
+    assert _live_view(cam) >= min(10, int(SECONDS * 10 * 0.5))
     assert cam.get_last_image().data.shape == (450, 768)
 
 
 @pytest.mark.display
 @pytest.mark.hardware
-def test_live_view_of_the_hikrobot_camera(open_camera) -> None:
+def test_debug_window_shows_the_hikrobot_camera(open_camera) -> None:
     if not hik_camera_connected():
         pytest.skip("no HikRobot camera connected")
-    cam = open_camera("HikRobot")
-    shown = _live_view(cam, f"uc2_cam_py - HikRobot {cam.model}")
-    assert len(shown) >= 3
+    cam = open_camera("HikRobot", debug_window=True)
+    assert _live_view(cam) >= 3

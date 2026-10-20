@@ -9,6 +9,59 @@ Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1�
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
 Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
+## Umgesetzte Pläne (neueste zuerst)
+
+### `create_camera(..., debug_window=True)` — einziger Weg zum Vorschaufenster — 2026-10-21
+
+**Implementiert:** ja · **Committet:** nein
+
+- `create_camera` hat als letzten benannten Parameter `debug_window: bool = False` (bool-Prüfung
+  wie `start_on_init`). `True` → `_preview.DebugWindow`: Daemon-Thread
+  `uc2_cam_py-debug-window` besitzt das X11-Fenster (Xlib ohne `XInitThreads`), zeichnet alle
+  ~30 ms das neueste Bild (nur bei neuer `sequence`). Der Konstruktor wartet bis zu 5 s auf
+  den Öffnungsversuch, damit ein Fehler vor der Rückkehr von `create_camera` geloggt ist.
+- Kein X11 (Build ohne X11 oder kein Display) → ERROR „debug_window=True: …“, **keine
+  Exception**, Kamera läuft weiter. Bei fehlendem Display loggt der C++-Core zusätzlich sein
+  eigenes ERROR. Fenster per Hand geschlossen → INFO, Kamera läuft weiter.
+  `Camera.close()` beendet den Thread **vor** dem Schließen des Backends.
+- Andere Wege entfernt: `preview.py` → internes `_preview.py` (ohne die Funktion `show()`);
+  `run_connection_test(index, frames, snapshot)` ist jetzt ein Python-Wrapper, der
+  `_hik.run_connection_test(..., display=False)` aufruft; `python -m uc2_cam_py` ohne
+  `--no-display`. C++ (Binding, CaptureApp, HikStandAlone) unverändert → kein Rebuild.
+- Tests: `test_display.py` auf `debug_window` umgestellt, dazu zwei neue Tests ohne Display
+  (Standard aus; ohne `DISPLAY` → ERROR, keine Exception); Signatur- und Fehlertabellen
+  ergänzt; `uc2_cam_py.preview` nicht mehr importierbar.
+- Doku: `Docs/UC2_cam_py_interface.md` §2, §7.7, §9, §10; README (Beispiel, Baum).
+- Verifikation: Ruff sauber · pyright 0 Fehler · pytest `-m "not hardware"` 138 passed
+  (inkl. `display`-Tests mit echtem Fenster) · von Hand mit `DISPLAY=` geprüft.
+  Hardware (`-m hardware`, `display and hardware`) noch vom Nutzer zu prüfen.
+- Bekannt, nicht angefasst: Schlägt `start()` bei `start_on_init=True` im Konstruktor fehl,
+  bleibt das Backend offen. `*******XOpenDisplay Fail *******` auf stdout ohne Display kommt
+  vom MVS-SDK schon beim Import.
+
+### Diagnosen in `camera.py` beseitigt, Python-Code auf 3.12-Syntax — 2026-10-20
+
+**Implementiert:** ja · **Committet:** nein
+
+- Ursache: Die 21 Pylance-Fehler waren Fehlalarme, keine Laufzeitfehler. `LoggerAdapter.warning`
+  hatte den Typ `Any | None` (`getattr(..., None) or ...`, None-Prüfung nur in einer
+  Comprehension); `x/y/w/h` im `roi`-Setter wurden in einem anderen `if` gebunden als benutzt.
+  Die 59 Ruff-Warnungen kamen aus dem breiteren Standard-Regelsatz von Ruff ≥ 0.17 (UP, PYI,
+  RUF, I, C4 …) und dem 3.8-Stil des Codes bei `requires-python = "==3.12.*"`.
+- `_logging.py`: `LoggerAdapter` sucht die Methoden mit `find()` und prüft einmal explizit auf
+  None → die Attribute sind `LogFn = Callable[[str], Any]`. Verhalten unverändert.
+- `camera.py`: `roi`-Setter über `rect: Roi | None`; `_fmt` entfernt (nirgends benutzt);
+  `__enter__ -> Self`, `__exit__` typisiert.
+- Paket, Tests und `_hik.pyi`: `Optional`/`Dict`/`List`/`Tuple`/`Union` → 3.12-Syntax
+  (Ruff-Autofix), überflüssige Anführungszeichen in Annotationen entfernt.
+- `pyproject.toml`: `[tool.ruff]` — line-length 120, `extend-select` UP/PYI/RUF; ignoriert
+  PYI021 (Docstrings im Stub sind die Hover-Hilfe) und RUF022 (`__all__` thematisch geordnet);
+  isort kennt `uc2_cam_py` (first-party) und `conftest` (local); `dict(k=v)` erlaubt.
+- Verifikation: `uvx ruff check python/ tests/` sauber · `uvx pyright` 0 Fehler ·
+  pytest `-m "not hardware"` 134 passed.
+- Nachträglich behoben: Tippfehler `"diable_existing_loggers"` in `tests/test_hik.py::setLogger`
+  — dictConfig ignorierte den Schlüssel und schaltete bestehende Logger ab.
+
 ---
 
 ## 1. Projekt und Aufbau
@@ -22,8 +75,9 @@ mit austauschbarer Senke. Python greift über pybind11 kopierfrei auf die Bilder
 core/include, core/src   C++-Core (namespace hik) — die eigentliche Logik
 bindings/hik_py.cpp      pybind11-Modul `_hik`
 python/uc2_cam_py/       Python-Paket: camera.py (Camera, create_camera), data.py (ImgData,
-                         ImgMetaData), hikrobot.py/simulated.py, preview.py, defaults.py,
-                         _logging.py (Log-Forwarder), _resources.py, _hik.pyi
+                         ImgMetaData), hikrobot.py/simulated.py, defaults.py,
+                         _preview.py (Fenster für debug_window), _logging.py (Log-Forwarder),
+                         _resources.py, _hik.pyi
 core/tests/              Catch2-v3-Tests
 tests/                   pytest-Tests
 Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, braucht Kamera),
@@ -60,6 +114,8 @@ Examples/HikStandalone.cpp ─→ CaptureApp ─→ MvsCamera   (Diagnose; auch 
 - Alles muss unter `-Wall -Wextra` warnungsfrei übersetzen. Das ist der Normalzustand,
   kein Ziel.
 - Fehler werden als `bool`-Rückgabe mit Out-Parametern gemeldet, nicht über Exceptions.
+- **Python:** 3.12-Syntax (`X | None`, `list[...]`, `Self`), keine `typing.Optional`/`List`.
+  `uvx ruff check python/ tests/` muss sauber sein; Regeln in `pyproject.toml` `[tool.ruff]`.
 
 ---
 
@@ -97,11 +153,13 @@ ctest --test-dir build/core       # 75 Tests (ohne [hardware])
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 
 # Python-Paket (editable). Nach C++-Änderungen nötig: Python importiert eine *Kopie*
-# der .so in site-packages, ein reiner CMake-Rebuild reicht nicht.
+# der .so in site-packages, ein reiner CMake-Rebuild reicht nicht. Ebenso nach dem Löschen
+# oder Umbenennen einer .py-Datei: die Editable-Installation hält eine feste Dateiliste.
 uv pip install -e . --no-build-isolation
 .venv/bin/python -m pytest tests -q -m "not hardware"    # 134 Tests, Sim-Backend, ~12 s
 .venv/bin/python -m pytest tests -q -m hardware          # dieselben Fälle an der HikRobot-Kamera
 UC2_DISPLAY_SECONDS=30 .venv/bin/python -m pytest -m display   # Live-Anzeige (get_last_image)
+uvx ruff check python/ tests/                            # Lint, Konfiguration in pyproject.toml
 
 # Manueller Ring-Buffer-Test ohne Kamera (nur Top-Level-Build): 20 simulierte Mono16-Frames,
 # Analyse- und Anzeige-Thread, Disk-Streaming. Endet, wenn das Vorschaufenster geschlossen wird.

@@ -43,7 +43,7 @@ UC2_cam_py/
 │   ├── data.py               #   ImgData, ImgMetaData
 │   ├── hikrobot.py           #   HikRobot vendor class (+ model table)
 │   ├── simulated.py          #   simulated vendor class
-│   ├── preview.py            #   simple live-view window
+│   ├── _preview.py           #   live-view window behind create_camera(debug_window=True)
 │   ├── defaults.py           #   default values (later from config.yaml)
 │   └── __main__.py           #   `python -m uc2_cam_py` connection test
 ├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
@@ -194,18 +194,19 @@ with uc2_cam_py.create_camera(
     print(cam.recording_file, meta.width, meta.height)
 ```
 
-Live view without extra dependencies:
+Live view without extra dependencies — `debug_window=True` is the only way to open a
+window. It shows the newest image until the camera is closed; without X11 an error is
+logged and the camera works without it:
 
 ```python
-from uc2_cam_py.preview import PreviewWindow
+import time
 
-with uc2_cam_py.create_camera(vendor="Simulated", start_on_init=True, store_image_data=False) as cam:
-    win = PreviewWindow(960, 600)
-    while win.show(cam.get_last_image()):    # until the window is closed
-        pass
+with uc2_cam_py.create_camera(vendor="Simulated", start_on_init=True, store_image_data=False,
+                              debug_window=True) as cam:
+    time.sleep(10)                           # the window runs on a thread of its own
 ```
 
-Quick connection test of a HikRobot camera (grab, preview, snapshot):
+Quick connection test of a HikRobot camera (grab, snapshot; no window):
 `uv run python -m uc2_cam_py --index 0 --frames 100 --snapshot capture.png`.
 The MVS runtime libraries are located automatically; no `LD_LIBRARY_PATH` needed.
 

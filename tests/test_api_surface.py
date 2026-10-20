@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import inspect
 
 import numpy as np
@@ -22,7 +23,7 @@ METHODS = ["get_last_image", "get_image", "get_image_info", "start", "stop", "cl
 
 
 def test_data_classes_are_importable_from_outside() -> None:
-    from uc2_cam_py import ImgData as A, ImgMetaData as B   # noqa: N814 - the point of the test
+    from uc2_cam_py import ImgData as A, ImgMetaData as B  # noqa: N814 - the point of the test
     from uc2_cam_py.data import ImgData as A2, ImgMetaData as B2
 
     assert A is A2 and B is B2
@@ -84,11 +85,17 @@ def test_create_camera_signature() -> None:
     expected = {
         "vendor": None, "connection_type": None, "serial": None, "index": None,
         "buffer_size": None, "start_on_init": False, "image_file_path": None,
-        "store_image_data": True, "logger": None,
+        "store_image_data": True, "logger": None, "debug_window": False,
     }
     for name, default in expected.items():
         assert name in params, name
         assert params[name].default == default, name
+
+
+def test_debug_window_is_the_only_way_to_a_window() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("uc2_cam_py.preview")
+    assert "display" not in inspect.signature(uc2_cam_py.run_connection_test).parameters
 
 
 def test_all_exports_exist() -> None:

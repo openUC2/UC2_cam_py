@@ -14,6 +14,8 @@ Welche Befehle ohne Rückfrage laufen dürfen und welche gesperrt sind, steht �
 erzwungen statt nur befolgt — in **[settings.json](settings.json)** unter
 `permissions.allow` / `permissions.deny`.
 
+
+Bitte für jeden umgesetzten Plan einen neuen Eintrag am oberen Teil der Status.md genierieren.  (Überschrift, Datum, implemented?, committed?)
 ---
 
 ## Projektdokumentation

@@ -6,10 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import uc2_cam_py
-
 from conftest import wait_for_frames
-
 
 # --------------------------------------------------------------------- exposure
 

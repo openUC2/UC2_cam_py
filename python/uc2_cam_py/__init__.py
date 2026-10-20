@@ -23,7 +23,7 @@ import atexit
 import warnings
 
 from . import _hik, _logging, defaults
-from ._hik import DeviceInfo, finalize, initialize, run_connection_test
+from ._hik import DeviceInfo, finalize, initialize
 from .camera import BINNING_FACTORS, CONNECTION_TYPES, Camera, create_camera, vendors
 from .data import ImgData, ImgMetaData
 from .hikrobot import HikRobotCamera
@@ -51,7 +51,7 @@ __all__ = [
 ]
 
 
-def list_devices(connection_type: "str | None" = None) -> "list[DeviceInfo]":
+def list_devices(connection_type: str | None = None) -> list[DeviceInfo]:
     """List the connected HikRobot cameras (e.g. to find serial numbers).
 
     Args:
@@ -63,6 +63,24 @@ def list_devices(connection_type: "str | None" = None) -> "list[DeviceInfo]":
     if connection_type is not None and connection_type not in CONNECTION_TYPES:
         raise ValueError(f"connection_type must be one of {CONNECTION_TYPES} or None")
     return _hik.list_devices(connection_type or "")
+
+
+def run_connection_test(index: int = -1, frames: int = 0, snapshot: str = "") -> int:
+    """Quick connection test of a HikRobot camera: open it and grab frames.
+
+    A diagnostic tool, not the acquisition API. It opens no window - the only
+    live view is ``create_camera(..., debug_window=True)``.
+
+    Args:
+        index: Device index, or -1 to prompt on the terminal.
+        frames: Stop after N frames; 0 = until Enter.
+        snapshot: Path for the first-frame snapshot (.bmp/.jpg/.png/.tif);
+            empty -> ``snapshot.png`` in the current directory.
+
+    Returns:
+        int: 0 on success, 2 if no camera was found, 1 on other errors.
+    """
+    return _hik.run_connection_test(index=index, frames=frames, snapshot=snapshot, display=False)
 
 
 # Forward C++ log messages before the SDK is initialised, so that its messages

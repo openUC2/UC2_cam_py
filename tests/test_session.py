@@ -50,7 +50,7 @@ def test_recording_writes_header_frames_and_sidecar(open_camera, recording_dir) 
     path = Path(cam.recording_file)
     assert path.parent == recording_dir
     assert path.suffix == ".uc2rb"
-    saved, dropped, error = cam._backend.stream_stats()
+    saved, _dropped, error = cam._backend.stream_stats()
     assert saved > 0 and not error
     meta = cam.get_image_info()
     assert path.stat().st_size == SESSION_HEADER_BYTES + saved * (FRAME_HEADER_BYTES + meta.frame_bytes)

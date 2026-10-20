@@ -8,12 +8,12 @@ can check the image content, not just its shape.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from . import _hik
 from .camera import Camera, register_vendor
 
-MODELS: Dict[str, Dict[str, Any]] = {
+MODELS: dict[str, dict[str, Any]] = {
     # Pitch of a typical 1/1.2" global-shutter sensor, so the non-None path of
     # pixel_pitch_um is exercised; no real camera is implied.
     "UC2-SIM": {"pixel_pitch_um": (5.86, 5.86)},
@@ -36,7 +36,7 @@ class SimulatedCamera(Camera):
 
     @classmethod
     def _create_backend(
-        cls, connection_type: Optional[str], serial: Optional[str], index: Optional[int], **options: Any
+        cls, connection_type: str | None, serial: str | None, index: int | None, **options: Any
     ) -> Any:
         if index not in (None, 0):
             raise IndexError(f"index {index} out of range (1 simulated camera)")
@@ -50,10 +50,10 @@ class SimulatedCamera(Camera):
             **options,
         )
 
-    def _model_info(self) -> Optional[Dict[str, Any]]:
+    def _model_info(self) -> dict[str, Any] | None:
         return MODELS.get(self.model)
 
-    def spot_position(self, sequence: int) -> Tuple[float, float]:
+    def spot_position(self, sequence: int) -> tuple[float, float]:
         """Expected spot centre (x, y) in sensor pixels of the frame ``sequence``."""
         x, y = self._backend.spot_position(sequence)
         return (float(x), float(y))

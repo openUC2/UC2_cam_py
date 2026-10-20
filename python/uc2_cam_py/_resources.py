@@ -8,10 +8,9 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 
-def available_memory() -> Optional[int]:
+def available_memory() -> int | None:
     """Bytes of RAM available to new allocations, or None if unknown.
 
     Linux: ``MemAvailable`` from ``/proc/meminfo``; elsewhere free physical
@@ -30,7 +29,7 @@ def available_memory() -> Optional[int]:
         return None
 
 
-def free_disk(path: Path) -> Optional[int]:
+def free_disk(path: Path) -> int | None:
     """Free bytes on the file system holding ``path`` (or its nearest existing parent)."""
     p = Path(path).expanduser().absolute()
     while not p.exists() and p != p.parent:
