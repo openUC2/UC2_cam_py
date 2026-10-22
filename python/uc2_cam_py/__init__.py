@@ -24,7 +24,15 @@ import warnings
 
 from . import _hik, _logging, defaults
 from ._hik import DeviceInfo, finalize, initialize
-from .camera import BINNING_FACTORS, CONNECTION_TYPES, Camera, create_camera, vendors
+from .camera import (
+    BINNING_FACTORS,
+    CONNECTION_TYPES,
+    Camera,
+    CameraInfo,
+    create_camera,
+    list_cameras,
+    vendors,
+)
 from .data import ImgData, ImgMetaData
 from .hikrobot import HikRobotCamera
 from .simulated import SimulatedCamera
@@ -33,6 +41,8 @@ __version__ = "0.2.0"
 
 __all__ = [
     "create_camera",
+    "list_cameras",
+    "CameraInfo",
     "Camera",
     "ImgData",
     "ImgMetaData",

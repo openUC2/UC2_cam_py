@@ -22,8 +22,8 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/.venv/bin/python",
-            // -i 0 skips the interactive device prompt, -n 20 bounds the run.
-            "args": ["-m", "uc2_cam_py", "-i", "0", "-n", "20"],
+            // Interactive: type a camera index in the terminal, Enter stops the live view.
+            "args": ["-m", "uc2_cam_py"],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "externalConsole": false,

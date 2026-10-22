@@ -11,9 +11,60 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### `create_camera(..., debug_window=True)` — einziger Weg zum Vorschaufenster — 2026-10-21
+### Kurzbefehle `uv run main | py_tests | c_tests | all_tests`, venv repariert — 2026-10-23
 
 **Implementiert:** ja · **Committet:** nein
+
+- uv 0.12 hat keinen Task-Runner; `uv run <name>` startet ein Skript aus `.venv/bin`. Die vier
+  Befehle sind deshalb Konsolen-Skripte des Entwickler-Pakets `tools/devtasks`
+  (`uc2-cam-py-devtasks`, Backend `uv_build`), eingebunden über die `dev`-Gruppe und
+  `[tool.uv.sources]` (editable). Nicht in `[project.scripts]` von `uc2_cam_py`, sonst kämen sie
+  ins Wheel. `main` zeigt direkt auf `uc2_cam_py.__main__:main`.
+- `py_tests`/`c_tests` reichen Argumente an pytest/ctest durch; `all_tests` nimmt keine.
+  `c_tests` konfiguriert `build/debug` bei Bedarf und baut vor dem Testen.
+- **venv neu aufgebaut** (`rm -rf .venv && uv sync`): Seit der Umbenennung `UC2_HIKpy` →
+  `UC2_cam_py` zeigten alle Shebangs in `.venv/bin` und `activate` auf den alten Pfad; `uv run
+  pytest` ging nicht. Die Erweiterung ist danach ein Release-Build (Debug-Build für gdb: VS-Code-
+  Task „Debug-Build (editable reinstall)“). README hat einen Troubleshooting-Punkt dazu.
+- Test `tests/test_devtasks.py` (Skripte registriert, Projektwurzel, CMake-Cache lesen).
+- Verifikation: `uv run main` (leere Eingabe → 0) · `uv run py_tests` 146 passed, 20 skipped ·
+  `uv run c_tests` 103/103 · `uv run c_tests -R waitForFrame` 3/3 · `uv run all_tests` → 0;
+  mit `PYTEST_ADDOPTS="-k gibt_es_nicht"` → „Python FAILED (exit 5)“, Exit 1 · Ruff sauber.
+
+### Interaktives `python -m uc2_cam_py`, `list_cameras()`, Debugfenster wartet auf Bilder — 2026-10-23
+
+**Implementiert:** ja · **Committet:** nein
+
+- **CLI** (`__main__.py`): `list_cameras()` → Tabelle `Index Name Vendor Connection Serial`
+  (stdout), Index eingeben → `create_camera(vendor, serial, store_image_data=False,
+  debug_window=True, start_on_init=True)`; Ende mit Enter (Daemon-Thread liest stdin), Ctrl+C
+  oder Schließen des Fensters. Leere Eingabe/EOF beendet ohne Kamera. Alte Optionen
+  `-i/-n/-s` entfallen; `run_connection_test()` bleibt als Funktion.
+- **`list_cameras() -> list[CameraInfo]`** (öffentlich, `camera.py`): fragt jede registrierte
+  Herstellerklasse über `Camera._discover()` ab (Standard `[]`). HikRobot aus
+  `_hik.list_devices()`, Simulated genau ein Eintrag (Konstanten `MODEL`/`SERIAL` in
+  `simulated.py`, `connection_type=""`). Reihenfolge = `vendors()` (HikRobot, dann Simulated).
+  Fehler eines Herstellers → WARNING, die anderen werden trotzdem gelistet. **Ein neuer
+  Hersteller implementiert nur `_discover()` in seiner Klasse.**
+- **C++ `RingBuffer::waitForFrame(afterSequence, timeoutMs)`** auf dem schon vorhandenen
+  `m_frameReady` (wurde in `commitWrite()` signalisiert, aber nie abgewartet);
+  `CameraBase::waitForFrame` (ohne Ring: schläft `timeoutMs`), Binding `wait_for_frame` ohne GIL.
+- **DebugWindow** wartet mit `wait_for_frame(last, 50)` statt fest zu pollen: neues Bild →
+  sofort gezeichnet, höchstens 60/s (bei schnelleren Kameras das neueste); Fenster-Events
+  mindestens alle 50 ms. Neue Property `is_open`.
+- Tests: Catch2 +3 (`[ring]`, `[ring][mt]`, `[camera][sim]`), pytest +6 (`test_main.py`,
+  `list_cameras`, `wait_for_frame`; Display-Test prüft, dass bei 10 fps jedes Bild gezeichnet wird).
+- Nebenbei: `.vscode/launch.json` „Debug C++“ rief die CLI mit `-i 0 -n 20` auf → jetzt ohne
+  Argumente. `build/debug` stammte noch aus `UC2_HIKpy` (CMake-Cache mit altem Pfad) →
+  `cmake --preset debug --fresh` und `build/debug/_deps/catch2-subbuild` gelöscht; die Presets
+  `asan`/`tsan`/`profile` sind vermutlich genauso betroffen (nicht angefasst).
+- Verifikation: `ctest --preset debug` 103/103 (4 Hardware übersprungen) · `ctest --test-dir
+  build/core` 99/99 · pytest `-m "not hardware"` 143 passed · Ruff/pyright sauber · CLI von
+  Hand mit und ohne `DISPLAY`. Hardware und CLI an der HikRobot-Kamera prüft der Nutzer.
+
+### `create_camera(..., debug_window=True)` — einziger Weg zum Vorschaufenster — 2026-10-21
+
+**Implementiert:** ja · **Committet:** ja (`ccfb0e9`)
 
 - `create_camera` hat als letzten benannten Parameter `debug_window: bool = False` (bool-Prüfung
   wie `start_on_init`). `True` → `_preview.DebugWindow`: Daemon-Thread
@@ -41,7 +92,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Diagnosen in `camera.py` beseitigt, Python-Code auf 3.12-Syntax — 2026-10-20
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`ccfb0e9`)
 
 - Ursache: Die 21 Pylance-Fehler waren Fehlalarme, keine Laufzeitfehler. `LoggerAdapter.warning`
   hatte den Typ `Any | None` (`getattr(..., None) or ...`, None-Prüfung nur in einer
@@ -85,7 +136,8 @@ Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, b
 Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
 CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
 core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING
-tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind
+tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind,
+                         devtasks/ (uv run main | py_tests | c_tests | all_tests)
 .claude/STATUS.md        dieses Dokument
 ```
 
@@ -135,6 +187,18 @@ angegebenen Abschnitt:
 
 ## 4. Build- und Testbefehle
 
+Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht im Wheel):
+
+```bash
+uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
+uv run py_tests [pytest-Args]     # 146 Tests, ~15 s (Hardware überspringt sich ohne Kamera)
+uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
+uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
+```
+
+`c_tests` baut mit der CMake aus `build/debug/CMakeCache.txt` (`CMAKE_COMMAND`, heute
+`/usr/bin/cmake` 4.3), nicht mit der aus der venv (4.4), die unter `uv run` zuerst im PATH steht.
+
 Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 
 ```bash
@@ -142,13 +206,13 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 78 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 103 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 75 Tests (ohne [hardware])
+ctest --test-dir build/core       # 99 Tests (ohne [hardware])
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 
@@ -156,10 +220,10 @@ ctest --test-dir build/core       # 75 Tests (ohne [hardware])
 # der .so in site-packages, ein reiner CMake-Rebuild reicht nicht. Ebenso nach dem Löschen
 # oder Umbenennen einer .py-Datei: die Editable-Installation hält eine feste Dateiliste.
 uv pip install -e . --no-build-isolation
-.venv/bin/python -m pytest tests -q -m "not hardware"    # 134 Tests, Sim-Backend, ~12 s
-.venv/bin/python -m pytest tests -q -m hardware          # dieselben Fälle an der HikRobot-Kamera
-UC2_DISPLAY_SECONDS=30 .venv/bin/python -m pytest -m display   # Live-Anzeige (get_last_image)
-uvx ruff check python/ tests/                            # Lint, Konfiguration in pyproject.toml
+uv run py_tests -q -m "not hardware"                     # ohne Kamera
+uv run py_tests -q -m hardware                           # dieselben Fälle an der HikRobot-Kamera
+UC2_DISPLAY_SECONDS=30 uv run py_tests -m display        # Live-Anzeige im Debugfenster
+uvx ruff check python/ tests/ tools/                     # Lint, Konfiguration in pyproject.toml
 
 # Manueller Ring-Buffer-Test ohne Kamera (nur Top-Level-Build): 20 simulierte Mono16-Frames,
 # Analyse- und Anzeige-Thread, Disk-Streaming. Endet, wenn das Vorschaufenster geschlossen wird.
@@ -315,6 +379,7 @@ if (rb.beginWrite(w)) {                       // stempelt tsBefore, setzt kFlagW
 // Lesen (kopierfrei)
 RingBuffer::ReadHandle r;
 rb.readLatest(r);                             // letztes geschriebenes Bild
+rb.waitForFrame(last, 50);                    // blockiert bis Sequenz > last oder 50 ms
 rb.readSlot(7, r);                            // Bild nach Index im Puffer
 rb.readSequence(1234, r);                     // Bild nach globaler Frame-Nummer
 r.stillValid();                               // wurde der Slot unter uns recycelt?

@@ -1142,6 +1142,24 @@ bool RingBuffer::readLatest(ReadHandle& out, uint32_t consumer)
     return acquireSlot(static_cast<uint32_t>(sequence % m_cfg.slotCount), &sequence, out, consumer);
 }
 
+bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
+{
+    if (!m_configured)
+    {
+        return false;
+    }
+    // committedCount - 1 is the newest sequence, as in readLatest(). commitWrite()
+    // bumps the count before it takes m_mtx to notify, so checking it under the
+    // lock cannot miss a wake-up.
+    const auto newer = [this, afterSequence]
+    {
+        const uint64_t committed = m_control->committedCount.load(std::memory_order_acquire);
+        return static_cast<int64_t>(committed) - 1 > afterSequence;
+    };
+    std::unique_lock<std::mutex> lk(m_mtx);
+    return m_frameReady.wait_for(lk, std::chrono::milliseconds(timeoutMs), newer);
+}
+
 bool RingBuffer::readSlot(uint32_t slot, ReadHandle& out, uint32_t consumer)
 {
     return acquireSlot(slot, nullptr, out, consumer);

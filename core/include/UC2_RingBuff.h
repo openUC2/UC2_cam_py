@@ -542,6 +542,15 @@ public:
     /// @return false if nothing has been committed yet or the frame was being rewritten.
     bool readLatest(ReadHandle& out, uint32_t consumer = kAnonymousConsumer);
 
+    /// Block until a frame newer than @p afterSequence has been committed, so a
+    /// reader can react to each new frame instead of polling readLatest().
+    /// @param afterSequence sequence of the newest frame the caller has seen,
+    ///                      or -1 to wait for any frame.
+    /// @param timeoutMs     upper bound for the wait; 0 only checks.
+    /// @return true if such a frame exists; false after the timeout, or at once
+    ///         if the buffer is not configured.
+    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs);
+
     /// Read whatever frame currently occupies ring slot @p slot.
     /// @param slot     ring slot index in [0, slotCount).
     /// @param out      [out] pinned view of the frame.

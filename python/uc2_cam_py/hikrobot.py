@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import _hik
-from .camera import Camera, register_vendor
+from .camera import Camera, CameraInfo, register_vendor
 
 #: Static data per camera model, for what the firmware does not report.
 #: Keys: "pixel_pitch_um" (x, y), "pixel_size_um" (x, y), "pixel_count" (x, y).
@@ -31,6 +31,13 @@ class HikRobotCamera(Camera):
         if options:
             raise TypeError(f"unexpected options for {cls.VENDOR}: {', '.join(sorted(options))}")
         return _hik.HikCamera(connection_type or "", serial or "", -1 if index is None else index)
+
+    @classmethod
+    def _discover(cls) -> list[CameraInfo]:
+        return [
+            CameraInfo(vendor=cls.VENDOR, model=d.model_name, serial=d.serial, connection_type=d.transport)
+            for d in _hik.list_devices()
+        ]
 
     def _model_info(self) -> dict[str, Any] | None:
         return MODELS.get(self.model)

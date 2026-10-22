@@ -1,0 +1,27 @@
+# Developer commands for uc2_cam_py. Installed only with the "dev" dependency group of the
+# project root (see [tool.uv.sources] there), never part of the uc2_cam_py wheel:
+#
+#   uv run main        pick a camera and show it live (python -m uc2_cam_py)
+#   uv run py_tests    pytest; extra arguments go to pytest   (uv run py_tests -m hardware)
+#   uv run c_tests     build + CTest of the debug preset; extra arguments go to ctest
+#   uv run all_tests   c_tests, then py_tests
+
+[project]
+name = "uc2-cam-py-devtasks"
+version = "0.1.0"
+description = "Developer commands (uv run main | py_tests | c_tests | all_tests) for uc2_cam_py."
+requires-python = "==3.12.*"
+dependencies = []
+
+[project.scripts]
+main = "uc2_cam_py.__main__:main"
+py_tests = "uc2_devtasks:py_tests"
+c_tests = "uc2_devtasks:c_tests"
+all_tests = "uc2_devtasks:all_tests"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "uc2_devtasks"

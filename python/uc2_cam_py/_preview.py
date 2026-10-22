@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -23,8 +24,10 @@ ImageLike = ImgData | np.ndarray
 
 #: Size (width, height) of the debug window in pixels.
 WINDOW_SIZE = (960, 600)
-#: Poll interval of the debug window thread in seconds (about 30 updates per second).
-POLL_INTERVAL_S = 0.03
+#: Longest wait for a new frame in ms; window events are processed at least this often.
+WAIT_TIMEOUT_MS = 50
+#: Upper limit for redraws per second: a screen shows no more, and the 8-bit conversion holds the GIL.
+MAX_DRAW_RATE_HZ = 60.0
 #: How long DebugWindow() waits for its thread to open the window, in seconds.
 OPEN_TIMEOUT_S = 5.0
 
@@ -96,8 +99,15 @@ class DebugWindow:
     destroyed by that thread only. Nothing here raises: a missing display or a
     failure in the thread is logged as an error and the camera carries on.
 
+    A new frame is drawn as soon as it is complete in the ring buffer (``wait``
+    returns early), at most :data:`MAX_DRAW_RATE_HZ` times per second; when
+    frames come faster, the newest one is shown.
+
     Args:
         source: Returns the newest image or None (``Camera.get_last_image``).
+        wait: ``wait(after_sequence, timeout_ms)`` blocks without the GIL until a
+            frame newer than ``after_sequence`` is in the ring (backend
+            ``wait_for_frame``).
         title: Window title.
         log: Logger of the camera.
 
@@ -106,8 +116,15 @@ class DebugWindow:
         frames_shown (int): Number of images drawn so far.
     """
 
-    def __init__(self, source: Callable[[], ImgData | None], title: str, log: LoggerAdapter) -> None:
+    def __init__(
+        self,
+        source: Callable[[], ImgData | None],
+        wait: Callable[[int, int], bool],
+        title: str,
+        log: LoggerAdapter,
+    ) -> None:
         self._source = source
+        self._wait = wait
         self._title = title
         self._log = log
         self._stop = threading.Event()
@@ -118,6 +135,11 @@ class DebugWindow:
         self._thread.start()
         # Wait for the attempt, so a missing display is logged before create_camera() returns.
         self._tried.wait(OPEN_TIMEOUT_S)
+
+    @property
+    def is_open(self) -> bool:
+        """True while the window is shown (False if it never opened or was closed)."""
+        return self.opened and self._thread.is_alive()
 
     def close(self) -> None:
         """Stop the thread; the window disappears with it."""
@@ -156,9 +178,11 @@ class DebugWindow:
         return window
 
     def _loop(self, window: PreviewWindow) -> None:
-        last = None
+        last = -1
         while not self._stop.is_set():
+            started = time.monotonic()
             image = self._source()
+            # "Not equal" rather than "newer": a restart (ROI, binning, start) begins again at 0.
             if image is not None and image.sequence == last:
                 image = None   # nothing new: only process window events
             if not window.show(image):
@@ -167,4 +191,7 @@ class DebugWindow:
             if image is not None:
                 last = image.sequence
                 self.frames_shown += 1
-            self._stop.wait(POLL_INTERVAL_S)
+                rest = 1.0 / MAX_DRAW_RATE_HZ - (time.monotonic() - started)
+                if rest > 0:
+                    self._stop.wait(rest)
+            self._wait(last, WAIT_TIMEOUT_MS)

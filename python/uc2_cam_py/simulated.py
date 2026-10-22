@@ -11,12 +11,16 @@ from __future__ import annotations
 from typing import Any
 
 from . import _hik
-from .camera import Camera, register_vendor
+from .camera import Camera, CameraInfo, register_vendor
+
+#: Model name and default serial of the simulated camera (as set by the C++ SimCamera).
+MODEL = "UC2-SIM"
+SERIAL = "SIM-0001"
 
 MODELS: dict[str, dict[str, Any]] = {
     # Pitch of a typical 1/1.2" global-shutter sensor, so the non-None path of
     # pixel_pitch_um is exercised; no real camera is implied.
-    "UC2-SIM": {"pixel_pitch_um": (5.86, 5.86)},
+    MODEL: {"pixel_pitch_um": (5.86, 5.86)},
 }
 
 
@@ -45,10 +49,15 @@ class SimulatedCamera(Camera):
         if unknown:
             raise TypeError(f"unexpected options for {cls.VENDOR}: {', '.join(sorted(unknown))}")
         return _hik.SimCamera(
-            serial=serial or "SIM-0001",
+            serial=serial or SERIAL,
             connection_type=connection_type or "USB3",
             **options,
         )
+
+    @classmethod
+    def _discover(cls) -> list[CameraInfo]:
+        # Exactly one simulated camera; it has no real connection.
+        return [CameraInfo(vendor=cls.VENDOR, model=MODEL, serial=SERIAL, connection_type="")]
 
     def _model_info(self) -> dict[str, Any] | None:
         return MODELS.get(self.model)

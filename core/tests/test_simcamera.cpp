@@ -196,6 +196,22 @@ TEST_CASE("readLatest returns the newest frame with its spot in place", "[camera
     CHECK(img.handle.stillValid());
 }
 
+TEST_CASE("waitForFrame signals new frames of a running SimCamera", "[camera][sim]")
+{
+    auto cam = makeSim();
+    CHECK_FALSE(cam->waitForFrame(-1, 10));   // no ring before the first start
+
+    REQUIRE(cam->start());
+    REQUIRE(cam->waitForFrame(-1, 2000));
+    CameraBase::Image img;
+    REQUIRE(cam->readLatest(img));
+    CHECK(cam->waitForFrame(static_cast<int64_t>(img.handle.sequence()), 2000));   // 100 fps: the next one
+    cam->stop();
+
+    const int64_t last = static_cast<int64_t>(cam->ring()->framesWritten()) - 1;
+    CHECK_FALSE(cam->waitForFrame(last, 30));   // stopped: nothing newer arrives
+}
+
 TEST_CASE("readSlot returns frames by slot and rejects bad indices", "[camera][sim]")
 {
     auto cam = makeSim(4);

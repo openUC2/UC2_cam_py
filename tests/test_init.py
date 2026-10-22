@@ -110,3 +110,32 @@ def test_hikrobot_by_serial_and_index(open_camera) -> None:
     assert cam.connection_type == first.transport
     cam.close()
     assert open_camera("HikRobot", index=0).serial == first.serial
+
+
+# ------------------------------------------------------------------ list_cameras
+
+def test_list_cameras_offers_one_simulated_camera_that_opens(open_camera) -> None:
+    cameras = uc2_cam_py.list_cameras()
+    assert {c.vendor for c in cameras} <= set(uc2_cam_py.vendors())
+    sims = [c for c in cameras if c.vendor == "Simulated"]
+    assert sims == [uc2_cam_py.CameraInfo("Simulated", "UC2-SIM", "SIM-0001", "")]
+    cam = open_camera(sims[0].vendor, serial=sims[0].serial)
+    assert (cam.model, cam.serial) == (sims[0].model, sims[0].serial)
+
+
+def test_list_cameras_skips_a_vendor_whose_search_fails(monkeypatch, caplog) -> None:
+    def fail(cls):
+        raise RuntimeError("SDK not initialised")
+
+    monkeypatch.setattr(uc2_cam_py.HikRobotCamera, "_discover", classmethod(fail))
+    assert [c.vendor for c in uc2_cam_py.list_cameras()] == ["Simulated"]
+    assert "Searching HikRobot cameras failed: SDK not initialised" in caplog.text
+
+
+@pytest.mark.hardware
+def test_list_cameras_lists_every_hikrobot_camera() -> None:
+    if not hik_camera_connected():
+        pytest.skip("no HikRobot camera connected")
+    hik = [c for c in uc2_cam_py.list_cameras() if c.vendor == "HikRobot"]
+    assert [c.serial for c in hik] == [d.serial for d in uc2_cam_py.list_devices()]
+    assert all(c.connection_type in uc2_cam_py.CONNECTION_TYPES for c in hik)

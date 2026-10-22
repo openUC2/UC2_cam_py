@@ -45,7 +45,7 @@ UC2_cam_py/
 │   ├── simulated.py          #   simulated vendor class
 │   ├── _preview.py           #   live-view window behind create_camera(debug_window=True)
 │   ├── defaults.py           #   default values (later from config.yaml)
-│   └── __main__.py           #   `python -m uc2_cam_py` connection test
+│   └── __main__.py           #   `python -m uc2_cam_py`: pick a camera, live view
 ├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
 ├── Docs/                     # interface spec, ring-buffer reference, tooling
 ├── CMakePresets.json         # build variants debug | profile | asan | tsan
@@ -147,10 +147,14 @@ cmake --preset debug && cmake --build --preset debug
 
 ```bash
 uv sync                                        # creates .venv (Python 3.12), builds the extension
-uv run pytest -m "not hardware"                # the full suite against the simulated camera
-uv run pytest -m hardware                      # the same checks on a connected HikRobot camera
-UC2_DISPLAY_SECONDS=30 uv run pytest -m display    # live view of get_last_image() in a window
+uv run main                                    # pick a camera, live view (= python -m uc2_cam_py)
+uv run py_tests                                # pytest; extra arguments go to pytest
+uv run c_tests                                 # build + CTest of the debug preset; arguments go to ctest
+uv run all_tests                               # c_tests, then py_tests
 ```
+
+`main`, `py_tests`, `c_tests` and `all_tests` come from the dev-only helper package
+`tools/devtasks` (installed with the `dev` group, not part of the `uc2_cam_py` wheel).
 
 After C++ changes reinstall the package (Python imports a *copy* of the module):
 `uv pip install -e . --no-build-isolation`.
@@ -206,8 +210,22 @@ with uc2_cam_py.create_camera(vendor="Simulated", start_on_init=True, store_imag
     time.sleep(10)                           # the window runs on a thread of its own
 ```
 
+`uc2_cam_py.list_cameras()` lists every camera that can be opened, over all vendors
+(`CameraInfo`: vendor, model, serial, connection type); open one with
+`create_camera(vendor=info.vendor, serial=info.serial)`.
+
+Interactive live view: `uv run main` (or `uv run python -m uc2_cam_py`) lists the cameras, opens the one
+whose index you type and shows each new image in the debug window (nothing is written
+to disk). Enter, Ctrl+C or closing the window stops it:
+
+```
+Index  Name     Vendor     Connection  Serial
+0      UC2-SIM  Simulated  -           SIM-0001
+Camera index (0-0, Enter = quit):
+```
+
 Quick connection test of a HikRobot camera (grab, snapshot; no window):
-`uv run python -m uc2_cam_py --index 0 --frames 100 --snapshot capture.png`.
+`uc2_cam_py.run_connection_test(index=0, frames=100, snapshot="capture.png")`.
 The MVS runtime libraries are located automatically; no `LD_LIBRARY_PATH` needed.
 
 ## Build & run — C++ standalone (Examples)
@@ -261,15 +279,19 @@ none is connected). `display` tests open a preview window and are skipped
 without a display.
 
 ```bash
-uv run pytest -m "not hardware"   # everything that needs no camera
-uv run pytest -m hardware         # the same checks on a real camera
-uv run pytest -m display          # live view via get_last_image()
+uv run all_tests                  # C++ and Python, both always run; exit code != 0 if one fails
+uv run py_tests                   # all pytest tests (hardware/display skip themselves)
+uv run py_tests -m "not hardware" # everything that needs no camera
+uv run py_tests -m hardware       # the same checks on a real camera
+UC2_DISPLAY_SECONDS=30 uv run py_tests -m display   # live view in the debug window, longer
 ```
 
 **C++** (Catch2 via CTest — every preset builds the tests):
 
 ```bash
-cmake --preset debug && cmake --build --preset debug && ctest --preset debug
+uv run c_tests                    # configure if needed, build and test the debug preset
+uv run c_tests -R waitForFrame    # arguments go to ctest
+cmake --preset debug && cmake --build --preset debug && ctest --preset debug   # the same by hand
 ctest --preset asan    # same suite under ASan + UBSan + LSan (after building that preset)
 ctest --preset tsan    # same suite under TSan
 ```
@@ -293,7 +315,7 @@ through `MvsCamera` and `HikCamera` and SKIP themselves when none is connected.
 
 The C++ one launches `.venv/bin/python -m uc2_cam_py` under gdb, so breakpoints in
 `core/src/*.cpp` and `bindings/hik_py.cpp` are hit through the whole call chain
-(pybind11 → `runCapture()` → `MvsCamera`). A breakpoint stays "unverified" until
+(pybind11 → `CameraBase`/`HikCamera` → `MvsCamera`). A breakpoint stays "unverified" until
 `import uc2_cam_py` loads the extension, then gdb resolves it — that is expected.
 
 **The catch: `cmake --build --preset debug` alone is not enough.** Python does not import
@@ -352,6 +374,10 @@ selected in the CMake Tools status bar, in the active preset.
   and is handy to confirm the camera is reachable independently of this tool.
 - The camera runs with `TriggerMode = Off` (free-run); the `trigger` setting is a
   placeholder for now.
+- **`uv run …` fails with "No such file or directory" after moving or renaming the
+  project directory:** the scripts in `.venv/bin` still point to the old path. Recreate the
+  venv: `rm -rf .venv && uv sync`. Build trees configured before the move need
+  `cmake --preset <name> --fresh` (and removing `build/<name>/_deps/catch2-subbuild`).
 
 
 # FAQ

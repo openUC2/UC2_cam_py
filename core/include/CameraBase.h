@@ -225,6 +225,10 @@ public:
     // --- Reading (zero-copy) ----------------------------------------------
     /// Pin the most recently committed frame. false if there is none yet.
     bool readLatest(Image& out);
+    /// Block until the current ring holds a frame newer than @p afterSequence
+    /// (-1: any frame), see RingBuffer::waitForFrame(). Before the first start()
+    /// there is no ring: sleeps @p timeoutMs and returns false.
+    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs);
     /// Pin whatever frame occupies ring slot @p slot of the current ring.
     /// false if there is no ring yet, the index is out of range or the slot
     /// holds no complete frame.

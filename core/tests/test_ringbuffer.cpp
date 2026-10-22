@@ -379,6 +379,23 @@ TEST_CASE("an empty slot and an out-of-range slot both fail cleanly", "[ring]")
     CHECK_FALSE(h.held());
 }
 
+TEST_CASE("waitForFrame reports only frames newer than the given sequence", "[ring]")
+{
+    RingBuffer rb(memConfig(4));
+    CHECK_FALSE(rb.waitForFrame(-1, 0));   // not configured: false at once
+    REQUIRE(configureSmall(rb));
+
+    CHECK_FALSE(rb.waitForFrame(-1, 20));   // nothing committed: runs into the timeout
+    for (uint64_t i = 0; i < 2; ++i)
+    {
+        const std::vector<uint8_t> src = pattern(i, rb.frameBytes());
+        REQUIRE(rb.writeFrame(src.data(), src.size()));
+    }
+    CHECK(rb.waitForFrame(-1, 0));
+    CHECK(rb.waitForFrame(0, 0));           // frame 1 is newer than 0
+    CHECK_FALSE(rb.waitForFrame(1, 20));    // 1 is the newest
+}
+
 TEST_CASE("sequences wrap around the ring and old ones become unreachable", "[ring]")
 {
     RingBuffer rb(memConfig(4));

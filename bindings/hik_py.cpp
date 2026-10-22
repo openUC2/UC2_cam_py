@@ -448,6 +448,10 @@ PYBIND11_MODULE(_hik, m)
 
         .def("read_latest", [](hik::CameraBase& c) { return readImage(c, true, 0); },
             "ImageHandle | None: The newest complete frame, None if there is none yet.")
+        .def("wait_for_frame", &hik::CameraBase::waitForFrame,
+            py::arg("after_sequence"), py::arg("timeout_ms"), py::call_guard<py::gil_scoped_release>(),
+            "bool: Wait (without the GIL) until a frame newer than `after_sequence` (-1: any)\n"
+            "is in the ring; False after `timeout_ms`.")
         .def("read_slot", [](hik::CameraBase& c, uint32_t slot) { return readImage(c, false, slot); },
             py::arg("slot"),
             "ImageHandle | None: Frame in ring slot `slot`, None if empty or out of range.")

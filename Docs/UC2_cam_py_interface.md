@@ -298,9 +298,10 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   wait.
 - **Acquisition.** The image copy runs on a C++ thread without the GIL.
 - **Debug window.** With `debug_window=True` a Python daemon thread owns the window (Xlib is not
-  thread-safe here): about 30 times per second it reads `get_last_image()` and draws new images.
-  It holds the GIL only for the conversion to 8-bit. Closing the window by hand stops only the
-  window; `close()` of the camera ends the thread.
+  thread-safe here). It waits without the GIL until a new image is complete in the ring buffer
+  and draws it at once — at most 60 times per second; with a faster camera it shows the newest
+  image. It holds the GIL only for the conversion to 8-bit. Closing the window by hand stops
+  only the window; `close()` of the camera ends the thread.
 
 ### 7.8 Error policy
 
@@ -357,7 +358,9 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 | Name | Description |
 |---|---|
 | `uc2_cam_py.list_devices(connection_type=None)` | Connected HikRobot cameras (`DeviceInfo`: transport, model_name, serial, user_name, ip). |
-| `uc2_cam_py.run_connection_test(index=-1, frames=0, snapshot="")` / `python -m uc2_cam_py` | Quick diagnostic of a HikRobot camera (grab, snapshot; no window — without `snapshot` the first image goes to `snapshot.png`). |
+| `uc2_cam_py.list_cameras()` | Every camera that can be opened, over all vendors: `list[CameraInfo]` (`vendor`, `model`, `serial`, `connection_type` — `""` for the simulated camera), in the order of `vendors()`. A vendor whose search fails is skipped with a WARNING. Open one with `create_camera(vendor=info.vendor, serial=info.serial)`. |
+| `python -m uc2_cam_py` | Interactive: lists the cameras (index, name, vendor, connection, serial), opens the one whose index is typed with `debug_window=True` and `store_image_data=False`, and runs until Enter, Ctrl+C or the window is closed. |
+| `uc2_cam_py.run_connection_test(index=-1, frames=0, snapshot="")` | Quick diagnostic of a HikRobot camera (grab, snapshot; no window — without `snapshot` the first image goes to `snapshot.png`). |
 | `uc2_cam_py.defaults` | Default values (vendor, buffer size, warning threshold, recording path); to be overridden by `config.yaml` later. |
 | `uc2_cam_py.vendors()` | Available vendor names. |
 
@@ -395,7 +398,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - `ImgData.sequence`, `ImgData.slot`, `ImgData.is_valid()`,
 - `ImgMetaData.dtype`, `ImgMetaData.wall_time_ns()`,
 - `can_set_roi`, `model`, `pixel_format`, `image_size`, `recording_file`,
-- `vendor_options`, `list_devices`, `debug_window`,
+- `vendor_options`, `list_devices`, `list_cameras` / `CameraInfo`, `debug_window`,
 - the settings JSON in the session comment.
 
 ## 11. Known limitations

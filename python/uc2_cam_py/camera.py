@@ -15,6 +15,7 @@ import json
 import math
 import numbers
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
@@ -44,6 +45,43 @@ def register_vendor(cls: type[Camera]) -> type[Camera]:
 def vendors() -> list[str]:
     """Names of the available vendors (e.g. ``["HikRobot", "Simulated"]``)."""
     return [c.VENDOR for c in _VENDORS.values()]
+
+
+@dataclass(frozen=True)
+class CameraInfo:
+    """One camera found by :func:`list_cameras`.
+
+    Open it with ``create_camera(vendor=info.vendor, serial=info.serial)``.
+
+    Attributes:
+        vendor (str): Vendor name as accepted by :func:`create_camera`.
+        model (str): Camera model name.
+        serial (str): Serial number.
+        connection_type (str): ``"USB3"``, ``"GigE"``, or ``""`` for a simulated camera.
+    """
+
+    vendor: str
+    model: str
+    serial: str
+    connection_type: str
+
+
+def list_cameras() -> list[CameraInfo]:
+    """All cameras that can be opened, over every vendor (in the order of :func:`vendors`).
+
+    A vendor whose search fails (e.g. its SDK is not initialised) is skipped
+    with a warning; the others are still listed.
+
+    Returns:
+        list[CameraInfo]: One entry per camera.
+    """
+    found: list[CameraInfo] = []
+    for cls in _VENDORS.values():
+        try:
+            found.extend(cls._discover())
+        except Exception as exc:  # noqa: BLE001 - one vendor must not hide the others
+            _logging.package_logger().warning(f"Searching {cls.VENDOR} cameras failed: {exc}")
+    return found
 
 
 def _is_real(value: Any) -> bool:
@@ -114,7 +152,10 @@ class Camera:
             self.start()
         if debug_window:
             self._debug_window = _preview.DebugWindow(
-                self.get_last_image, f"uc2_cam_py debug - {self.VENDOR} {self.model} SN {self.serial}", self._log
+                self.get_last_image,
+                self._backend.wait_for_frame,
+                f"uc2_cam_py debug - {self.VENDOR} {self.model} SN {self.serial}",
+                self._log,
             )
 
     @classmethod
@@ -122,6 +163,11 @@ class Camera:
         cls, connection_type: str | None, serial: str | None, index: int | None, **options: Any
     ) -> Any:
         raise NotImplementedError
+
+    @classmethod
+    def _discover(cls) -> list[CameraInfo]:
+        """The cameras of this vendor that can be opened now (for :func:`list_cameras`)."""
+        return []
 
     def _model_info(self) -> dict[str, Any] | None:
         """Static model data (pixel_pitch_um, pixel_size_um, pixel_count) or None."""

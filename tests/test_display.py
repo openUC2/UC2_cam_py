@@ -63,6 +63,18 @@ def test_no_debug_window_by_default(open_camera) -> None:
     assert open_camera()._debug_window is None
 
 
+def test_the_backend_waits_for_new_frames(open_camera) -> None:
+    """The call the debug window blocks on until a new frame is in the ring."""
+    cam = open_camera()
+    backend = cam._backend
+    assert not backend.wait_for_frame(-1, 10)            # no ring before the first start
+    cam.start()
+    assert backend.wait_for_frame(-1, 2000)
+    assert backend.wait_for_frame(cam.get_last_image().sequence, 2000)   # 100 fps: the next one
+    cam.stop()
+    assert not backend.wait_for_frame(cam.get_last_image().sequence, 50)   # stopped: nothing newer
+
+
 def test_debug_window_without_display_logs_an_error(open_camera, rec_logger, monkeypatch) -> None:
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -79,7 +91,9 @@ def test_debug_window_without_display_logs_an_error(open_camera, rec_logger, mon
 def test_debug_window_shows_the_simulated_camera(open_camera) -> None:
     cam = open_camera(sensor_width=1920, sensor_height=1200, frame_rate=10.0, debug_window=True)
     window = cam._debug_window
-    assert _live_view(cam) >= min(10, int(SECONDS * 10 * 0.5))
+    shown = _live_view(cam)
+    assert shown >= min(10, int(SECONDS * 10 * 0.5))
+    assert shown >= cam.get_last_image().sequence - 1    # 10 fps is below the draw limit: each frame is drawn
     cam.close()
     assert cam._debug_window is None
     assert not window._thread.is_alive()                 # close() ends the window thread

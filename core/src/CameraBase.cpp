@@ -2,6 +2,7 @@
 
 #include "hikLog.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -434,6 +435,19 @@ bool CameraBase::readLatest(Image& out)
     out.ring   = r;
     out.header = r->sessionHeader();
     return true;
+}
+
+bool CameraBase::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
+{
+    // The local shared_ptr keeps the ring alive if a restart replaces it
+    // meanwhile; the caller then wakes at the latest after timeoutMs.
+    std::shared_ptr<RingBuffer> r = ring();
+    if (!r)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+        return false;
+    }
+    return r->waitForFrame(afterSequence, timeoutMs);
 }
 
 bool CameraBase::readSlot(uint32_t slot, Image& out)

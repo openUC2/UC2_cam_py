@@ -153,6 +153,7 @@ dev = [
     { name = "pybind11" },
     { name = "pytest" },
     { name = "scikit-build-core" },
+    { name = "uc2-cam-py-devtasks" },
 ]
 
 [package.metadata]
@@ -164,4 +165,10 @@ dev = [
     { name = "pybind11", specifier = ">=2.12" },
     { name = "pytest", specifier = ">=8" },
     { name = "scikit-build-core", specifier = ">=0.10" },
+    { name = "uc2-cam-py-devtasks", editable = "tools/devtasks" },
 ]
+
+[[package]]
+name = "uc2-cam-py-devtasks"
+version = "0.1.0"
+source = { editable = "tools/devtasks" }

@@ -321,3 +321,27 @@ TEST_CASE("streaming to disk keeps up with a live producer", "[ring][mt][stream]
     CHECK(rb.waitTimeouts() == 0);
     CHECK(rb.framesOverwritten() == 0);
 }
+
+TEST_CASE("waitForFrame wakes as soon as another thread commits a frame", "[ring][mt]")
+{
+    RingBuffer::Config cfg;
+    cfg.slotCount = 4;
+
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(16, 16));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+
+    std::atomic<bool> woke(false);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::thread waiter([&] { woke.store(rb.waitForFrame(-1, 5000)); });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::vector<uint8_t> frame(static_cast<size_t>(rb.frameBytes()), 7);
+    REQUIRE(rb.writeFrame(frame.data(), frame.size()));
+    waiter.join();
+
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    CHECK(woke.load());
+    CHECK(waited < std::chrono::seconds(2));   // woken by the commit, not by the 5 s timeout
+}
