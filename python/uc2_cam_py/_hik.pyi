@@ -39,6 +39,9 @@ def initialize() -> bool:
 def finalize() -> None:
     """Release the explicit SDK reference taken by initialize()."""
 
+def sdk_path() -> str:
+    """Root of the MVS SDK this process loaded (diagnostics)."""
+
 def run_connection_test(index: int = -1, frames: int = 0, snapshot: str = "", display: bool = True) -> int:
     """Quick connection test of a HikRobot camera; 0 ok, 2 no camera, 1 error."""
 

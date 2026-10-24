@@ -5,6 +5,7 @@
 #   uv run py_tests    pytest; extra arguments go to pytest   (uv run py_tests -m hardware)
 #   uv run c_tests     build + CTest of the debug preset; extra arguments go to ctest
 #   uv run all_tests   c_tests, then py_tests
+#   uv run fetch_mvs   extract the HikRobot SDK from External/hik/*.zip into External/hik/MVS
 
 [project]
 name = "uc2-cam-py-devtasks"
@@ -18,6 +19,7 @@ main = "uc2_cam_py.__main__:main"
 py_tests = "uc2_devtasks:py_tests"
 c_tests = "uc2_devtasks:c_tests"
 all_tests = "uc2_devtasks:all_tests"
+fetch_mvs = "uc2_devtasks.mvs:main"
 
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13"]

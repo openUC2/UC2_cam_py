@@ -67,6 +67,7 @@ cache-keys = [
     { file = "CMakeLists.txt" },
     { file = "core/**/*" },
     { file = "bindings/**/*" },
+    { file = "External/hik/MVS/VERSION" },   # rewritten by `uv run fetch_mvs`
 ]
 
 [tool.uv.sources]

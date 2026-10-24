@@ -11,6 +11,37 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
+### HikRobot-SDK im Projekt (`External/hik/MVS`), unabhängig von `/opt/MVS`; SDK 4.7 → 4.9 — 2026-10-25
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Pakete und Import:** Der Nutzer hat MVS 5.1.1 (Linux x86_64, aarch64, Windows) als Zips in
+  `External/hik/` gelegt. `uv run fetch_mvs` (`tools/devtasks/src/uc2_devtasks/mvs.py`) entpackt
+  Zip → `.tar.gz` → `MVS.tar.gz` als Stream mit `tarfile`-Filter `"data"` und übernimmt nur
+  `include/`, `lib/64`, `lib/aarch64`, `lib/CLProtocol/<arch>`, `license/` und HikRobots
+  USB/GigE-Setup-Skripte (`scripts/`) nach `External/hik/MVS/` (92 MiB, `VERSION`). Nicht in Git
+  (öffentliches Repo, keine Weitergabe-Erlaubnis in den Lizenzdateien); eingecheckt ist nur
+  `External/hik/README.md`. Windows wird ignoriert (→ Todos.md).
+- **CMake:** Quelle nur `External/hik/MVS` oder ausdrücklich `-DMVS_ROOT` — kein Rückfall auf
+  `/opt/MVS`/`MVCAM_SDK_PATH` (auf Wunsch des Nutzers). Lib-Ordner nach Prozessor;
+  `MVS_CAMERA_CONTROL_LIB` wird bei jedem Configure neu gesucht (alte Bäume schalten ohne
+  `--fresh` um). `hikcam_core` gibt `LINKER:--disable-new-dtags` weiter (DT_RPATH).
+  Wurzel-CMake installiert die Laufzeit nach `uc2_cam_py/_mvs/` — Symlinks als Kopie unter ihrem
+  Namen, versionierte Ziele weggelassen (Wheel kann keine Symlinks) —, `_hik` hat
+  `INSTALL_RPATH $ORIGIN/_mvs/lib/<arch>`. `pyproject.toml` cache-keys + `External/hik/MVS/VERSION`.
+- **Machbarkeitsprüfung** (LD_DEBUG/strace mit eigenem ctypes-Probe): SDK 4.9 lädt seine
+  Plug-ins immer neben `libMvCameraControl` (unabhängig von `LD_LIBRARY_PATH`/`MVCAM_*`), liest
+  aber `ALLUSERSPROFILE` schon beim Laden; ohne ihn legt es den Cache unter `/GenICam/xml/cache`.
+- **Laufzeit:** `MvsCamera.cpp` bestimmt das SDK per `dladdr(&MV_CC_Initialize)`, setzt
+  `MVCAM_*` überschreibend, lädt den Renderer aus dem Architekturordner; Binding `_hik.sdk_path()`.
+  `_sdk_env.py` (erster Import in `__init__.py`, mit `# isort: split`) setzt `ALLUSERSPROFILE` →
+  `~/.cache/uc2_cam_py` und `MVCAM_*` → `_mvs`, **auch gegen** die Werte des MVS-Installers.
+- **SDK 4.7.0.3 → 4.9.0.3:** alle 25 benutzten API-Funktionen vorhanden; baut ohne Warnung.
+- Verifikation: `uv run all_tests` normal **und** mit sauberer Umgebung → C++ 109/109, Python 151
+  passed / 21 skipped · `build/core` 105/105 · TSan 109/109 · `/proc/self/maps` ohne `/opt/MVS`,
+  alle 10 Plug-ins aus `_mvs` · CMake-Fehlermeldung bei fehlendem SDK geprüft.
+  **Offen (Nutzer):** Kamera mit SDK 4.9, aarch64 auf dem Pi.
+
 ### Speichern auf Platte zur Laufzeit umschalten — `cam.store_image_data = True/False` — 2026-10-25
 
 **Implementiert:** ja · **Committet:** nein
@@ -169,7 +200,9 @@ Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
 CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
 core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING
 tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind,
-                         devtasks/ (uv run main | py_tests | c_tests | all_tests)
+                         devtasks/ (uv run main | py_tests | c_tests | all_tests | fetch_mvs)
+External/hik/            HikRobot-Pakete (Zips) und daraus das SDK in MVS/ — beides nicht in Git,
+                         nur README.md; installiert landet die Laufzeit in uc2_cam_py/_mvs/
 .claude/STATUS.md        dieses Dokument
 ```
 
@@ -210,6 +243,7 @@ angegebenen Abschnitt:
 
 | Fallstrick | Details |
 |---|---|
+| **Die Umgebung eines MVS-Installers zieht nach `/opt/MVS`.** `~/.bashrc`/`~/.profile` exportieren `LD_LIBRARY_PATH=/opt/MVS/lib/...`, `MVCAM_*` und `ALLUSERSPROFILE=/opt/MVS/MVFG`. Gegenmittel: `--disable-new-dtags` (DT_RPATH vor `LD_LIBRARY_PATH`) an allem, was `hikcam_core` linkt; `python/uc2_cam_py/_sdk_env.py` setzt die Variablen **vor** dem Import von `_hik` — `ALLUSERSPROFILE` (GenICam-Cache) liest das SDK schon beim Laden der Bibliothek, aus C++ ist es dafür zu spät. Prüfen: `tests/test_hik.py::test_the_sdk_comes_from_the_package_not_from_an_installation`. | oben, Eintrag 2026-10-25 |
 | **ROI/Binning während der Aufnahme starten die Session neu.** Der Ring Buffer friert seine Geometrie ein; `CameraBase` stoppt, ändert, startet neu → neuer Ring, neue `.uc2rb`-Datei. Jeder `start()` legt ohnehin einen neuen Ring an. | §13 |
 | **Catch2 definiert `INFO`/`WARN` als Makros.** In Tests `hikLog.h` vor Catch2 einbinden und `(hik::INFO)(...)` schreiben, sonst zerlegt der Präprozessor Definition bzw. Aufruf. | `core/tests/test_log.cpp` |
 | **Der Payload-Datenwettlauf im Ring Buffer ist Absicht.** Im `FullPolicy::Overwrite` kann ein Consumer Bytes lesen, die der Producer gerade überschreibt; `ReadHandle::stillValid()` ist der Weg, das zu erfahren. TSan, helgrind und drd melden es; für die MT-Tests ist es in `tools/sanitizers/tsan.supp` bzw. `tools/valgrind/hik.supp` gezielt unterdrückt (Docs/Tooling.md §5). `FullPolicy::Wait` vermeidet es ganz. | §11.1 |
@@ -277,9 +311,12 @@ pytest-Marker: `hardware` (echte Kamera, sonst übersprungen), `display` (Vorsch
 ohne DISPLAY/WAYLAND_DISPLAY übersprungen). Die Fixture `camera` in `tests/conftest.py` läuft
 parametrisiert für `Simulated` und `HikRobot`.
 
-**Ohne das MVS-SDK lässt sich nicht einmal konfigurieren.** Default `/opt/MVS`; überschreibbar
-mit `-DMVS_ROOT=/pfad` oder der Umgebungsvariablen `MVCAM_SDK_PATH`. CMake bricht hart ab,
-wenn `MvCameraControl.h` fehlt.
+**Ohne das MVS-SDK lässt sich nicht einmal konfigurieren.** Es liegt im Projekt unter
+`External/hik/MVS` (nicht in Git): HikRobot-Zips nach `External/hik/`, dann `uv run fetch_mvs`
+(siehe `External/hik/README.md`). `/opt/MVS` und `$MVCAM_SDK_PATH` werden **nicht** gelesen;
+nur `-DMVS_ROOT=/pfad` überschreibt bewusst. Fehlt `MvCameraControl.h`, bricht CMake hart ab.
+Aktuell MVS 5.1.1 = SDK 4.9.0.3, x86_64 (`lib/64`) und aarch64 (`lib/aarch64`), Auswahl nach
+`CMAKE_SYSTEM_PROCESSOR`.
 
 ### Test-Konventionen
 

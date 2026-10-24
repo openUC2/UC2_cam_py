@@ -21,46 +21,59 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/HikTooling.cmake")
 
 # ---------------------------------------------------------------------------
 # Locate the MVS / HikRobot Machine Vision SDK.
-# Override with -DMVS_ROOT=/path or the MVCAM_SDK_PATH environment variable.
+# It ships with the project in External/hik/MVS (filled by `uv run fetch_mvs`,
+# see External/hik/README.md). An installation such as /opt/MVS and the
+# MVCAM_SDK_PATH variable an MVS installer exports are deliberately not used:
+# only -DMVS_ROOT=/path overrides the bundle, e.g. to try another SDK version.
 # ---------------------------------------------------------------------------
-if(DEFINED ENV{MVCAM_SDK_PATH} AND NOT MVS_ROOT)
-    set(MVS_ROOT "$ENV{MVCAM_SDK_PATH}")
+get_filename_component(MVS_BUNDLE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../External/hik/MVS" ABSOLUTE)
+if(MVS_ROOT)
+    set(_mvs_source "-DMVS_ROOT")
+else()
+    set(MVS_ROOT "${MVS_BUNDLE_ROOT}")
+    set(_mvs_source "bundled")
 endif()
-if(NOT MVS_ROOT)
-    set(MVS_ROOT "/opt/MVS")
-endif()
-# Alternative here: check env variables
-message(STATUS "Using MVS SDK at: ${MVS_ROOT}")
 
 set(MVS_INCLUDE_DIR "${MVS_ROOT}/include")
 if(NOT EXISTS "${MVS_INCLUDE_DIR}/MvCameraControl.h")
     message(FATAL_ERROR
-        "MvCameraControl.h not found under ${MVS_INCLUDE_DIR}.\n"
-        "Set -DMVS_ROOT=/path/to/MVS (the directory that contains include/ and lib/).")
+        "MVS SDK not found: ${MVS_INCLUDE_DIR}/MvCameraControl.h is missing.\n"
+        "Put the HikRobot Linux packages into External/hik and run `uv run fetch_mvs` "
+        "(see External/hik/README.md), or point -DMVS_ROOT at an SDK tree (include/, lib/<arch>/).")
+endif()
+set(MVS_VERSION "unknown")
+if(EXISTS "${MVS_ROOT}/VERSION")
+    file(STRINGS "${MVS_ROOT}/VERSION" _mvs_sdk_line REGEX "^sdk=")
+    string(REPLACE "sdk=" "" MVS_VERSION "${_mvs_sdk_line}")
 endif()
 
-# Library subdirectory: the x86 SDK ships lib/64 and lib/32, the ARM SDKs
-# (e.g. Raspberry Pi 5) use an architecture-named directory instead.
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(MVS_LIB_CANDIDATES "${MVS_ROOT}/lib/64" "${MVS_ROOT}/lib/aarch64" "${MVS_ROOT}/lib/arm64")
+# Library subdirectory by processor: the bundle holds x86_64 (lib/64) and
+# aarch64 (lib/aarch64) side by side, so the pointer size alone cannot decide.
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _mvs_cpu)
+if(_mvs_cpu MATCHES "^(x86_64|amd64)$")
+    set(MVS_ARCH_DIR "64")
+elseif(_mvs_cpu MATCHES "^(aarch64|arm64)$")
+    set(MVS_ARCH_DIR "aarch64")
 else()
-    set(MVS_LIB_CANDIDATES "${MVS_ROOT}/lib/32" "${MVS_ROOT}/lib/armhf")
+    message(FATAL_ERROR "No MVS libraries for processor '${CMAKE_SYSTEM_PROCESSOR}' (supported: x86_64, aarch64).")
 endif()
+set(MVS_LIB_DIR "${MVS_ROOT}/lib/${MVS_ARCH_DIR}")
 
-find_library(MVS_CAMERA_CONTROL_LIB
-    NAMES MvCameraControl
-    PATHS ${MVS_LIB_CANDIDATES}
-    NO_DEFAULT_PATH)
+# Searched afresh on every configure: the cache of an older build tree may still
+# point into another SDK (e.g. /opt/MVS).
+unset(MVS_CAMERA_CONTROL_LIB CACHE)
+find_library(MVS_CAMERA_CONTROL_LIB NAMES MvCameraControl PATHS "${MVS_LIB_DIR}" NO_DEFAULT_PATH)
 if(NOT MVS_CAMERA_CONTROL_LIB)
-    list(JOIN MVS_LIB_CANDIDATES "\n  " _mvs_searched)
-    message(FATAL_ERROR "libMvCameraControl not found. Searched:\n  ${_mvs_searched}")
+    message(FATAL_ERROR "libMvCameraControl not found in ${MVS_LIB_DIR} - run `uv run fetch_mvs`.")
 endif()
-get_filename_component(MVS_LIB_DIR "${MVS_CAMERA_CONTROL_LIB}" DIRECTORY)
+message(STATUS "Using MVS SDK ${MVS_VERSION} (${_mvs_source}): ${MVS_ROOT}")
 message(STATUS "Using MVS library:  ${MVS_CAMERA_CONTROL_LIB}")
 
-# Publish the library directory so the parent project can bake it into the
-# rpath of the Python extension module.
-set(HIKCAMTEST_MVS_LIB_DIR "${MVS_LIB_DIR}" CACHE INTERNAL "MVS runtime library dir")
+# Published for the parent project: the rpath of the build tree and the SDK
+# files the Python package installs next to its extension module.
+set(HIKCAMTEST_MVS_ROOT     "${MVS_ROOT}"     CACHE INTERNAL "MVS SDK root")
+set(HIKCAMTEST_MVS_LIB_DIR  "${MVS_LIB_DIR}"  CACHE INTERNAL "MVS runtime library dir")
+set(HIKCAMTEST_MVS_ARCH_DIR "${MVS_ARCH_DIR}" CACHE INTERNAL "MVS library sub-directory (64 | aarch64)")
 
 # ---------------------------------------------------------------------------
 # Optional X11 support for the live preview window.
@@ -109,6 +122,11 @@ target_link_libraries(${HIK_CAM_CORE_TARGET_NAME} PUBLIC
     "${MVS_CAMERA_CONTROL_LIB}"
     Threads::Threads
     ${CMAKE_DL_LIBS})
+
+# Every program linking the core gets DT_RPATH instead of DT_RUNPATH: it is
+# searched before LD_LIBRARY_PATH, which an MVS installer points at /opt/MVS -
+# the SDK this project was built against must win.
+target_link_options(${HIK_CAM_CORE_TARGET_NAME} INTERFACE "LINKER:--disable-new-dtags")
 
 # X11 is an implementation detail (guarded inside ImageWindow.cpp); the define
 # and headers are private, but the library must be linked by consumers.

@@ -102,6 +102,10 @@ public:
     static bool initSdk();
     static void finalizeSdk();
 
+    /// Root directory of the MVS SDK this process loaded (the directory that
+    /// holds lib/<arch>/libMvCameraControl.so), for diagnostics.
+    static std::string sdkPath();
+
     /// Enumerate the reachable devices of the given transport layers (default:
     /// GigE and USB3). The result is cached internally so open(index) can be
     /// called afterwards. Returns the number of devices found, or a negative

@@ -16,22 +16,41 @@ namespace hik {
 
 namespace {
 
-// Root of the MVS SDK, from the environment or the default install location.
-std::string sdkRoot()
+// Directory of the libMvCameraControl this process actually loaded
+// (<root>/lib/<arch>), or "" if it cannot be told. Taken from the library, not
+// from MVCAM_SDK_PATH: an MVS installer exports that system-wide, and it may
+// name another SDK than the one this program was linked against.
+std::string sdkLibDir()
 {
-    const char* sdk = std::getenv("MVCAM_SDK_PATH");
-    return (sdk != nullptr && *sdk != '\0') ? sdk : "/opt/MVS";
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(&MV_CC_Initialize), &info) == 0 || info.dli_fname == nullptr)
+    {
+        return std::string();
+    }
+    const std::string path = info.dli_fname;
+    const size_t slash = path.rfind('/');
+    return (slash == std::string::npos) ? std::string() : path.substr(0, slash);
 }
 
-// Provide sane defaults for the MVS environment variables when the SDK's
-// set_env_path.sh has not been sourced. setenv() with overwrite=0 respects any
-// value the user already exported. Without ALLUSERSPROFILE the SDK writes its
-// GenICam XML cache to a literal "$(ALLUSERSPROFILE)" directory in the CWD.
-void setupSdkEnvDefaults()
+// Point the SDK's own variables at the SDK this process loaded, overwriting
+// what an MVS installation exported (/opt/MVS): its parts must not be mixed in.
+// The plug-ins are found next to libMvCameraControl anyway; these only matter
+// for the SDK's remaining look-ups. ALLUSERSPROFILE (the GenICam XML cache) is
+// not set here - the SDK reads it while the library loads, before any of our
+// code runs, so the Python package sets it before it imports _hik.
+void setupSdkEnv()
 {
-    std::string base = sdkRoot();
-    setenv("MVCAM_SDK_PATH", base.c_str(), 0);
-    setenv("ALLUSERSPROFILE", (base + "/MVFG").c_str(), 0);
+    const std::string lib = sdkLibDir();
+    const size_t cut = lib.rfind("/lib/");
+    if (cut == std::string::npos)
+    {
+        return;
+    }
+    const std::string root = lib.substr(0, cut);
+    setenv("MVCAM_SDK_PATH", root.c_str(), 1);
+    setenv("MVCAM_COMMON_RUNENV", (root + "/lib").c_str(), 1);
+    setenv("MVCAM_GENICAM_CLPROTOCOL", (root + "/lib/CLProtocol").c_str(), 1);
+    DBG("Using the MVS SDK in " + root);
 }
 
 // Preload the SDK renderer so the live display works without LD_LIBRARY_PATH.
@@ -42,8 +61,7 @@ void setupSdkEnvDefaults()
 // failure just means the preview window is unavailable.
 void preloadRenderLib()
 {
-    std::string sub = (sizeof(void*) == 8) ? "64" : "32";
-    std::string path = sdkRoot() + "/lib/" + sub + "/libMVRender.so";
+    std::string path = sdkLibDir() + "/libMVRender.so";
     void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (h != nullptr) { DBG("Loaded SDK renderer from: " + path); }
     else              { DBG("SDK renderer unavailable: " + std::string(dlerror()));}
@@ -104,7 +122,7 @@ std::shared_ptr<MvsSdk> MvsSdk::acquire()
     }
 
     DBG("Initializing SDK...");
-    setupSdkEnvDefaults();
+    setupSdkEnv();
     int ret = MV_CC_Initialize();
     if (ret != MV_OK)
     {
@@ -179,6 +197,13 @@ bool MvsCamera::initSdk()
 {
     g_explicitSdk = MvsSdk::acquire();
     return g_explicitSdk != nullptr;
+}
+
+std::string MvsCamera::sdkPath()
+{
+    const std::string lib = sdkLibDir();
+    const size_t cut = lib.rfind("/lib/");
+    return (cut == std::string::npos) ? lib : lib.substr(0, cut);
 }
 
 void MvsCamera::finalizeSdk()

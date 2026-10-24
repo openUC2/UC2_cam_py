@@ -9,8 +9,9 @@ buffer, recording to disk and zero-copy image access.
   set exposure / frame rate / gain / binning / ROI, start and stop acquisition,
   read images as numpy arrays without copying, record to disk. The full
   specification is [Docs/UC2_cam_py_interface.md](Docs/UC2_cam_py_interface.md).
-- **Vendors:** HikRobot cameras (GigE Vision and USB3 Vision, via the MVS SDK at
-  `/opt/MVS`) and a **simulated camera** for development and tests without hardware.
+- **Vendors:** HikRobot cameras (GigE Vision and USB3 Vision, via the MVS SDK that ships
+  with the project in `External/hik/MVS`) and a **simulated camera** for development and
+  tests without hardware.
 - **C++ core** (`hikcam_core`): ring buffer
   ([Docs/RingBuff_REF.md](Docs/RingBuff_REF.md)), camera abstraction, logging.
 - **Tools:** a terminal capture tool (`HikStandAlone`), a ring-buffer example,
@@ -76,7 +77,7 @@ flowchart TD
         RB["RingBuffer + FileStreamSink (.uc2rb)"]
         DEV["HikCamera → MvsCamera  ·  SimCamera"]
     end
-    CORE --> SDK["MVS SDK — libMvCameraControl  ·  /opt/MVS"]
+    CORE --> SDK["MVS SDK — libMvCameraControl  ·  External/hik/MVS → uc2_cam_py/_mvs"]
     SDK --> HW([HikRobot camera])
 ```
 
@@ -107,8 +108,15 @@ sequenceDiagram
 
 ## Requirements
 
-- The MVS SDK, commonly installed at `/opt/MVS` (only needed for HikRobot cameras at
-  runtime, but required to build).
+- **The HikRobot MVS SDK — no installation needed.** Put HikRobot's Linux packages
+  (`MVS-<version>_Linux_<arch>_<date>.zip`, x86_64 and/or aarch64) into `External/hik/`
+  and run `uv run fetch_mvs` once; see [External/hik/README.md](External/hik/README.md).
+  The SDK is proprietary and therefore not in git. CMake uses only this copy (an
+  `/opt/MVS` installation is ignored; `-DMVS_ROOT=/path` overrides it deliberately), and the
+  installed Python package carries the runtime libraries in `uc2_cam_py/_mvs/`.
+  Still needed once per machine, with `sudo`: the udev rule / usbfs memory for USB3
+  cameras and the network settings for GigE — HikRobot's scripts for that land in
+  `External/hik/MVS/scripts/`.
 - A C++17 compiler, CMake ≥ 3.25, Ninja.
 - For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
   (uv installs it automatically from `.python-version`).
@@ -355,13 +363,14 @@ selected in the CMake Tools status bar, in the active preset.
 ## Notes / troubleshooting
 
 - **No cameras found**
-  - GigE: the camera and your network card must be in the same subnet. Use
-    `/opt/MVS/bin/Ip_Configurator` to check/assign the camera IP.
+  - GigE: the camera and your network card must be in the same subnet. HikRobot's
+    `Ip_Configurator` (part of the full MVS package, not of `External/hik/MVS`) checks and
+    assigns the camera IP.
   - USB3: 
   1. correct camera installation
       - Camera should be shown in lsusb
-      - Camera root dir is /opt/MVS and that contains /include and /lib
-  2. Usb rights are set correctly
+      - `External/hik/MVS` contains `include/` and `lib/64` (or `lib/aarch64`) — else run `uv run fetch_mvs`
+  2. Usb rights are set correctly (or run `sudo External/hik/MVS/scripts/set_usb_priority.sh`)
       - ls -l /dev/bus/usb/*/* | grep -i -B0 rw-rw-rw-
       - if this doesn't show anything
         - /etc/udev/rules.d/99-mvs-usb.rules
@@ -371,9 +380,13 @@ selected in the CMake Tools status bar, in the active preset.
         - Unplug camera and plug again
 
   3. make sure the USB filesystem buffer is large enough; the SDK ships
-    `sudo /opt/MVS/bin/set_usbfs_memory_size.sh` for that.
-- **Verify against Hik's own tool**: `/opt/MVS/bin/MVS` is the full GUI client
-  and is handy to confirm the camera is reachable independently of this tool.
+    `sudo External/hik/MVS/scripts/set_usbfs_memory_size.sh` for that.
+- **Verify against Hik's own tool**: the MVS GUI client (full MVS installation, optional)
+  is handy to confirm the camera is reachable independently of this tool.
+- **The MVS installer's environment** (`LD_LIBRARY_PATH=/opt/MVS/lib/...`, `MVCAM_*`,
+  `ALLUSERSPROFILE` in `~/.bashrc`/`~/.profile`) is no longer needed and does not interfere:
+  the programs carry a DT_RPATH to their SDK, and the Python package sets the SDK variables
+  for its own process. Remove those lines if no other software uses `/opt/MVS`.
 - The camera runs with `TriggerMode = Off` (free-run); the `trigger` setting is a
   placeholder for now.
 - **`uv run …` fails with "No such file or directory" after moving or renaming the

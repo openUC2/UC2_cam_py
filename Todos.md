@@ -14,6 +14,20 @@
     - Gain in dB, Exp time in us?
 
 - Test for different plattforms (ARM, IOS)
+    - ARM (aarch64): das SDK (MVS 5.1.1) wird von `uv run fetch_mvs` nach `External/hik/MVS/lib/aarch64`
+      eingespielt und von CMake auf ARM ausgewählt, ist aber noch nirgends gebaut oder getestet.
+      Auf dem Raspberry Pi: `uv run fetch_mvs && uv run all_tests`, dann `uv run py_tests -m hardware`.
+
+- Windows-Unterstützung: Paket `External/hik/MVS_Win_STD_5.1.1_261015.zip` liegt bereit, wird aber noch
+  nicht genutzt (`fetch_mvs`, CMake-Suche, DT_RPATH/`dladdr`, `/proc/self/maps`-Test und `ImageWindow`
+  sind Linux-spezifisch).
+
+- SDK 4.9 (MVS 5.1.1) an der HikRobot-Kamera prüfen (bisher nur ohne Kamera getestet):
+  `uv run py_tests -m hardware`, `uv run c_tests`, `uv run main`. Dabei mit `LD_DEBUG=libs` prüfen, dass auch
+  die beim Öffnen einer Kamera nachgeladenen SDK-Teile aus `uc2_cam_py/_mvs` kommen.
+
+- Lizenz: vor dem Veröffentlichen von Wheels (enthalten die HikRobot-Bibliotheken in `uc2_cam_py/_mvs`)
+  klären, ob HikRobot die Weitergabe erlaubt.
 
 - Threading
     - ~~currently "waitForFrame" blocks the caling thread~~ (erledigt: Aufnahme läuft im C++-Thread, Python liest aus dem Ring Buffer)

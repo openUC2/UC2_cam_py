@@ -72,13 +72,56 @@ if (HIK_BUILD_PYTHON)
     pybind11_add_module(_hik bindings/hik_py.cpp)
     target_link_libraries(_hik PRIVATE hikcam_core)
 
-    # Bake the MVS runtime library directory into the module's rpath so importing
-    # the extension works without exporting LD_LIBRARY_PATH.
+    # rpath: the SDK of the build tree for the module in build/, the copy in the
+    # package for the installed one, so neither needs LD_LIBRARY_PATH.
     set_target_properties(_hik PROPERTIES
         BUILD_RPATH   "${HIKCAMTEST_MVS_LIB_DIR}"
-        INSTALL_RPATH "${HIKCAMTEST_MVS_LIB_DIR}")
+        INSTALL_RPATH "$ORIGIN/_mvs/lib/${HIKCAMTEST_MVS_ARCH_DIR}")
 
     # Install the extension next to the pure-Python package (see wheel.packages,
     # which maps python/uc2_cam_py -> the wheel's uc2_cam_py/ directory).
     install(TARGETS _hik DESTINATION uc2_cam_py)
+
+    # The SDK runtime goes into the package as uc2_cam_py/_mvs/ (the SDK's own
+    # layout), so an installed uc2_cam_py needs neither External/hik nor /opt/MVS.
+    # A wheel cannot hold symlinks: each one is installed as a copy under its own
+    # name - the SDK loads its parts by these unversioned names - and the
+    # versioned file it points to is left out.
+    set(_mvs_lib "${HIKCAMTEST_MVS_LIB_DIR}")
+    file(GLOB_RECURSE _mvs_files LIST_DIRECTORIES false RELATIVE "${_mvs_lib}" "${_mvs_lib}/*")
+    set(_mvs_skip "")
+    foreach(_rel IN LISTS _mvs_files)
+        if(IS_SYMLINK "${_mvs_lib}/${_rel}")
+            file(READ_SYMLINK "${_mvs_lib}/${_rel}" _target)
+            get_filename_component(_dir "${_rel}" DIRECTORY)
+            if(_target MATCHES "\\.so\\.[0-9.]+$")
+                if(_dir)
+                    list(APPEND _mvs_skip "${_dir}/${_target}")
+                else()
+                    list(APPEND _mvs_skip "${_target}")
+                endif()
+            endif()
+        endif()
+    endforeach()
+    foreach(_rel IN LISTS _mvs_files)
+        if(_rel IN_LIST _mvs_skip)
+            continue()
+        endif()
+        get_filename_component(_dir "${_rel}" DIRECTORY)
+        get_filename_component(_name "${_rel}" NAME)
+        get_filename_component(_real "${_mvs_lib}/${_rel}" REALPATH)
+        install(PROGRAMS "${_real}" DESTINATION "uc2_cam_py/_mvs/lib/${HIKCAMTEST_MVS_ARCH_DIR}/${_dir}"
+                RENAME "${_name}")
+    endforeach()
+    if(HIKCAMTEST_MVS_ARCH_DIR STREQUAL "aarch64")
+        set(_mvs_clp "Linux64_aarch64")
+    else()
+        set(_mvs_clp "Linux64_x64")
+    endif()
+    if(EXISTS "${HIKCAMTEST_MVS_ROOT}/lib/CLProtocol/${_mvs_clp}")
+        install(DIRECTORY "${HIKCAMTEST_MVS_ROOT}/lib/CLProtocol/${_mvs_clp}"
+                DESTINATION uc2_cam_py/_mvs/lib/CLProtocol)
+    endif()
+    install(DIRECTORY "${HIKCAMTEST_MVS_ROOT}/license" DESTINATION uc2_cam_py/_mvs OPTIONAL)
+    install(FILES "${HIKCAMTEST_MVS_ROOT}/VERSION" DESTINATION uc2_cam_py/_mvs OPTIONAL)
 endif()

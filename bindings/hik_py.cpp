@@ -244,6 +244,8 @@ PYBIND11_MODULE(_hik, m)
           "    bool: True on success.");
     m.def("finalize", &hik::MvsCamera::finalizeSdk,
           "Release the explicit SDK reference taken by initialize().");
+    m.def("sdk_path", &hik::MvsCamera::sdkPath,
+          "str: Root of the MVS SDK this process loaded (diagnostics).");
 
     m.def("run_connection_test",
           [](int index, long frames, const std::string& snapshot, bool display) {

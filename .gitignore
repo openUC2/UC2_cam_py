@@ -31,3 +31,8 @@ MVS-4.6.3_x86_64_20260205.tar.gz
 note.txt
 HiKCam_Samplesusw/
 
+# HikRobot MVS packages and the SDK extracted from them by `uv run fetch_mvs`:
+# proprietary, so never in git - only the README that explains them.
+External/hik/*
+!External/hik/README.md
+

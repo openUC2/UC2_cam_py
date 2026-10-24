@@ -95,7 +95,7 @@ int runCapture(const CaptureOptions& opts)
         std::printf("No cameras found.\n"
                     "  - Check the cable / power.\n"
                     "  - For GigE, make sure the camera and NIC are in the same subnet\n"
-                    "    (see /opt/MVS/bin Ip_Configurator).\n");
+                    "    (HikRobot's Ip_Configurator from the full MVS package can check that).\n");
         return 2;
     }
     printDeviceList(camera.devices());

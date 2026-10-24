@@ -22,6 +22,10 @@ from __future__ import annotations
 import atexit
 import warnings
 
+# First of all: the SDK reads part of its environment while the extension loads.
+from . import _sdk_env  # noqa: F401
+
+# isort: split
 from . import _hik, _logging, defaults
 from ._hik import DeviceInfo, finalize, initialize
 from .camera import (
