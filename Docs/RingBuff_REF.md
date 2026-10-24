@@ -494,13 +494,18 @@ geändert. Die Seqlock-Fälle zählen `rejectedReads()` hoch.
 
 ### 7.10 Disk-Streaming — [L593-L597](../core/include/UC2_RingBuff.h#L593-L597)
 
-Diese Methoden leiten an den eingebauten `FileStreamSink` weiter. Ohne `storagePath` liefern sie
-leer, 0 bzw. `false`.
+Diese Methoden steuern den eingebauten `FileStreamSink` bzw. leiten an ihn weiter. Er läuft nicht
+über `m_sinks`: Diese Liste darf sich während einer Sitzung nicht ändern, Streaming lässt sich aber
+jederzeit schalten. Der Producer erreicht ihn über einen atomaren Zeiger (`m_liveStream`); der
+Sink selbst lebt von `configure()` bis zum Destruktor, der Zeiger hängt also nie.
 
-| Methode | Rückgabe |
+| Methode | Beschreibung / Rückgabe |
 |---|---|
-| `std::string streamFilePath()` | Pfad der aktuellen Container-Datei |
-| `uint64_t streamFramesSaved()` | In die Datei geschriebene Frames |
+| `bool startStreaming(const std::string& dirPath)` | Streamt in eine **neue** Datei in `dirPath`. Läuft eine Sitzung, öffnet sie sofort und speichert die ab jetzt veröffentlichten Frames, ohne den Producer anzuhalten; sonst öffnet sie mit dem nächsten `startRecording()`. Schon aktiv mit demselben Verzeichnis: nichts. `false`, wenn nicht konfiguriert, `dirPath` leer oder die Datei nicht anlegbar ist. |
+| `void stopStreaming()` | Schreibt die bis jetzt veröffentlichten Frames fertig und schließt die Datei; Sitzung und Producer laufen weiter. |
+| `bool isStreaming()` | Ob gerade eine Container-Datei geschrieben wird |
+| `std::string streamFilePath()` | Pfad der aktuellen oder letzten Container-Datei; leer, wenn noch keine geöffnet wurde |
+| `uint64_t streamFramesSaved()` | In die aktuelle/letzte Datei geschriebene Frames (die Zähler beginnen pro Datei bei 0) |
 | `uint64_t streamFramesDropped()` | Frames, die recycelt wurden, bevor sie gespeichert werden konnten (inkl. zerrissener Datensätze, siehe [§8](#8-klasse-filestreamsink-und-container-format)) |
 | `bool streamHasError()` | Ein Öffnen oder Schreiben ist fehlgeschlagen |
 
@@ -508,9 +513,11 @@ leer, 0 bzw. `false`.
 
 ## 8. Klasse `FileStreamSink` und Container-Format
 
-[L680](../core/include/UC2_RingBuff.h#L680). `configure()` legt den Streamer automatisch an,
-wenn `Config::storagePath` gesetzt ist, und registriert ihn über `addSink(ops())`. Der
-`RingBuffer` besitzt ihn über `std::unique_ptr`; `ops().destroy` ist deshalb `nullptr`.
+[L680](../core/include/UC2_RingBuff.h#L680). `configure()` legt den Streamer immer an (ohne
+Verzeichnis ruht er). Der `RingBuffer` besitzt ihn über `std::unique_ptr` und ruft seine
+Sitzungs-Hooks direkt auf (siehe §7.10), nicht über `addSink`. `ops()` bleibt für eigene Instanzen,
+die man selbst mit `addSink(ops())` anhängt; `ops().destroy` ist `nullptr`. Eine Instanz kann
+nacheinander mehrere Dateien öffnen und schließen.
 
 ### Öffentliche Schnittstelle
 
@@ -525,8 +532,9 @@ wenn `Config::storagePath` gesetzt ist, und registriert ihn über `addSink(ops()
 
 ### Ablauf
 
-1. **`onSessionStart`** legt das Verzeichnis an und öffnet
-   `<dir>/uc2_<cameraId>_<YYYYmmdd_HHMMSS>.uc2rb`. Der Zeitstempel ist UTC aus `startWallNs`.
+1. **`onSessionStart`** setzt die Zähler zurück, legt das Verzeichnis an und öffnet
+   `<dir>/uc2_<cameraId>_<YYYYmmdd_HHMMSS>.uc2rb`. Der Zeitstempel ist UTC des Öffnens
+   (beim Sitzungsstart also `startWallNs`, bei `startStreaming()` mitten in der Sitzung später).
    `cameraId` wird auf `[0-9A-Za-z._-]` reduziert (andere Zeichen → `_`, leer → `cam`).
    Existiert die Datei schon, wird `_001` … `_999` angehängt. Anschließend schreibt der Sink den
    Session-Header und das JSON-Sidecar, registriert sich als Consumer und startet den
@@ -535,8 +543,13 @@ wenn `Config::storagePath` gesetzt ist, und registriert ihn über `addSink(ops()
 3. **Writer-Thread** liest jede Sequenz mit `readSequence()` als registrierter Consumer und
    schreibt `UC2_FrameHeader` plus Payload mit **einem** `writev()` direkt aus dem Slot. Er
    reagiert auf Signale und fragt zusätzlich alle 50 ms nach.
-4. **`onSessionEnd`** stoppt den Writer, schreibt alle ausstehenden Frames, meldet den Consumer ab,
-   ruft `fsync` auf und schließt die Datei.
+4. **`onSessionEnd`** hält das Ende fest (`m_stopAt = framesWritten()`), stoppt den Writer, der
+   die ausstehenden Frames bis dorthin schreibt, meldet den Consumer ab, ruft `fsync` auf und
+   schließt die Datei. Das feste Ende ist nötig, weil bei `stopStreaming()` der Producer weiterläuft:
+   ein Writer, der bis zur aktuellen Spitze nachholt, würde nie fertig.
+
+Der Kopf einer mitten in der Sitzung geöffneten Datei ist der Sitzungs-Kopf; deren erster Frame
+hat dann eine Sequenz n > 0, und `startWallNs`/`startMonoNs` bleiben die Zeitbasis der Frames.
 
 ### Datei-Layout (`.uc2rb`)
 

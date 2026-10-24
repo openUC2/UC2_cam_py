@@ -211,6 +211,42 @@ CameraBase::BufferConfig CameraBase::bufferConfig() const
     return m_cfg;
 }
 
+bool CameraBase::setStoragePath(const std::string& dirPath)
+{
+    std::shared_ptr<RingBuffer> live;
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_cfg.storagePath = dirPath;   // also for the next start() and geometry restarts
+        if (m_running.load())
+        {
+            live = m_ring;
+        }
+    }
+    if (!live)
+    {
+        return true;
+    }
+    // Outside m_mtx: switching off waits for the writer and fsync(), and readers
+    // (readLatest() takes m_mtx) must not stall meanwhile. If a stop or restart
+    // gets in between, the ring it left behind is no longer recording and the
+    // call below only stores the directory; the new ring took it from m_cfg.
+    if (dirPath.empty())
+    {
+        live->stopStreaming();
+        return true;
+    }
+    if (live->startStreaming(dirPath))
+    {
+        return true;
+    }
+    std::lock_guard<std::mutex> lk(m_mtx);
+    if (m_cfg.storagePath == dirPath)
+    {
+        m_cfg.storagePath.clear();   // keep "not storing" consistent with what happens
+    }
+    return false;
+}
+
 bool CameraBase::start()
 {
     std::lock_guard<std::mutex> lk(m_mtx);

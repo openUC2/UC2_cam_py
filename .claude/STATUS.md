@@ -11,6 +11,38 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
+### Speichern auf Platte zur Laufzeit umschalten — `cam.store_image_data = True/False` — 2026-10-25
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Python:** `store_image_data` ist jetzt eine Property mit Setter (Entscheidung des Nutzers).
+  Während der Aufnahme **nahtlos**: Ring, Sequenz, Live-Bild und Session laufen weiter;
+  `True` öffnet eine neue `.uc2rb`-Datei ab dem nächsten Bild, `False` schreibt bis zum
+  aktuellen Bild fertig und schließt sie. Ohne Aufnahme gilt der Wert ab `start()`. Einschalten
+  prüft die Platte (`_check_disk()`, aus `_check_resources` herausgelöst) → `OSError`, Wert
+  bleibt `False`; kein bool → `TypeError`; geschlossen → `RuntimeError`.
+- **C++ `RingBuffer`:** `startStreaming(dir)` / `stopStreaming()` / `isStreaming()`. Der
+  eingebaute `FileStreamSink` hängt nicht mehr in `m_sinks` (die Liste darf sich während einer
+  Session nicht ändern), sondern lebt von `configure()` bis zum Destruktor und ist für den
+  Producer über `std::atomic<FileStreamSink*> m_liveStream` erreichbar; `m_streamMtx`
+  serialisiert Streaming mit `start/stopRecording()`.
+- **C++ `FileStreamSink`:** Ende beim Stopp festhalten (`m_stopAt`) — sonst holt der Writer bei
+  laufendem Producer nie auf. Dateiname vom Öffnungszeitpunkt, Zähler pro Datei, `filePath()`
+  unter Sperre, `setDirectory()`.
+- **C++ `CameraBase::setStoragePath(dir)`** (leer = aus), schaltet außerhalb von `m_mtx` um,
+  damit `readLatest()` während `fsync` nicht blockiert; Binding `set_storage_path` ohne GIL.
+- Tests: Catch2 +6 (`[ring][stream]` ein/aus, zweite Datei, früh gesetztes Verzeichnis,
+  Fehlerfall; `[ring][stream][mt]` Stopp bei laufendem Producer; `[camera][sim][stream]` ×2),
+  pytest +4 (`test_session.py`).
+- **TSan:** Der MT-Test lief zuerst mit `Overwrite` und löste den dokumentierten, absichtlichen
+  Payload-Wettlauf (§3, §11.1) aus, der nur für `test_ringbuffer_mt.cpp` unterdrückt ist → auf
+  `Wait` umgestellt; danach 109/109 unter TSan, dreimal hintereinander. `build/tsan` dafür wie
+  `debug` neu konfiguriert (`--fresh`, alter `catch2-subbuild` gelöscht). `asan`/`profile`
+  stammen weiter aus `UC2_HIKpy`.
+- Verifikation: `uv run c_tests` 109/109 · `build/core` 105/105 · `uv run py_tests` 150 passed,
+  21 skipped · pyright 0 Fehler · Ruff sauber · von Hand: 1 s Speichern bei 10 fps → 10 Bilder,
+  Dateigröße exakt `8448 + 10·(64 + 4 608 000)`, Aufnahme lief durch.
+
 ### Kurzbefehle `uv run main | py_tests | c_tests | all_tests`, venv repariert — 2026-10-23
 
 **Implementiert:** ja · **Committet:** nein
@@ -191,7 +223,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 146 Tests, ~15 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 171 Tests, ~15 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -206,13 +238,13 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 103 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 109 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 99 Tests (ohne [hardware])
+ctest --test-dir build/core       # 105 Tests (ohne [hardware])
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 

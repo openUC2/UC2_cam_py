@@ -45,7 +45,7 @@ with uc2_cam_py.create_camera(vendor="HikRobot", connection_type="USB3",
 - **Zero-copy access.** `ImgData.data` is a read-only numpy view onto the slot.
 - **Recording.** With `store_image_data=True` every image is also streamed to a `.uc2rb`
   file (plus a `.json` sidecar) in `image_file_path`, by a writer thread that never blocks the
-  camera.
+  camera. `store_image_data` can be switched at any time, also while recording (§4).
 - **Units at the interface:** exposure in **ms**, frame rate in **1/s**, gain in **dB**,
   pixel pitch/size in **µm**, ROI and pixel count in **unbinned sensor pixels**, timestamps in
   **ns** (monotonic clock). Vendors convert from their firmware units.
@@ -67,7 +67,7 @@ create_camera(vendor=None, connection_type=None, serial=None, index=None, buffer
 | `buffer_size` | `int ≥ 2 \| None` | `None` → `defaults.BUFFER_SIZE` (16) | Number of images (slots) in the ring buffer. |
 | `start_on_init` | `bool` | `False` | Start acquisition immediately after initialisation. |
 | `image_file_path` | `str \| PathLike \| None` | `None` → `defaults.IMAGE_FILE_PATH` (`~/UC2_recordings`) | Directory for the recorded data; created if missing. |
-| `store_image_data` | `bool` | `True` | Write every image to disk (in `image_file_path`). |
+| `store_image_data` | `bool` | `True` | Write every image to disk (in `image_file_path`). Can be switched later with the setting of the same name ([§4](#4-settings-readwrite)). |
 | `logger` | logger-like `\| None` | `None` → `logging.getLogger("uc2_cam_py")` | Object with `error`, `warning` (or `warn`), `info`, `debug` methods. |
 | `debug_window` | `bool` | `False` | *Addition.* Show the newest image in a window until `close()` (X11, 8-bit grey view, contrast stretched). The **only** way to open a window. Without X11: ERROR, no exception, the camera works without the window. |
 | `**vendor_options` | | | *Addition.* Vendor-specific extras, see [§8](#8-vendors). |
@@ -149,6 +149,14 @@ even while the firmware's auto mode is active, because writing a value switches 
 | `binning` | `1 \| 2 \| 4` | camera's value (usually 1) | Symmetric hardware binning. `None` means 1. | WARNING |
 | `trigger` | `None` | `None` | Placeholder; the camera always runs in free-run mode. Writing anything else changes nothing. | ERROR |
 | `roi` | `(x, y, width, height) \| None` | `None` | Region of interest in **unbinned sensor pixels**, x, y ≥ 0, width, height > 0. `None` is the complete sensor. | WARNING |
+| `store_image_data` | `bool` | from `create_camera` | *Addition.* Write every image to disk (in `image_file_path`), see below. | — (always settable) |
+
+**`store_image_data` while recording** switches without a restart: the acquisition, the buffer,
+`get_last_image()` and the image sequence carry on. `True` opens a **new** `.uc2rb` file holding
+the images from the next one on; `False` writes the images up to now, closes the file and logs
+how many were saved. When not recording, the value applies from the next `start()`. Switching on
+checks the disk like the initialisation (ERROR + `OSError` if the directory cannot be created or
+holds less than one full buffer; the value then stays `False`). A non-`bool` → `TypeError`.
 
 **Reading** returns the camera's actual value; `None` only if it cannot be read. For example,
 `exposure_time_ms` returns the current value even in auto mode. `frame_rate_per_sec` without a
@@ -272,10 +280,11 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   - Alternatively, use a `buffer_size` large enough for the processing time.
 
 ### 7.5 Recording
-- **Files.** Each session is one append-only file
-  `<image_file_path>/uc2_<camera_id>_<YYYYmmdd_HHMMSS>[_NNN].uc2rb`, laid out as
-  `[session header 8448 B]` followed by `[frame header 64 B][payload]` per image, plus a `.json`
-  sidecar with the metadata.
+- **Files.** Each session — and each switch-on of `store_image_data` during a session — is one
+  append-only file `<image_file_path>/uc2_<camera_id>_<YYYYmmdd_HHMMSS>[_NNN].uc2rb` (time the
+  file was opened), laid out as `[session header 8448 B]` followed by `[frame header 64 B][payload]`
+  per image, plus a `.json` sidecar with the metadata. A file opened during a session starts
+  with a sequence > 0; its header is the session's, so the timestamps keep their time base.
 - **Writer.** A writer thread reads the images from the buffer and writes them with `writev()`.
   The camera thread never touches the file system.
 - **Dropped frames.** If the disk cannot keep up, frames are dropped from the file (counted),
@@ -399,6 +408,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - `ImgMetaData.dtype`, `ImgMetaData.wall_time_ns()`,
 - `can_set_roi`, `model`, `pixel_format`, `image_size`, `recording_file`,
 - `vendor_options`, `list_devices`, `list_cameras` / `CameraInfo`, `debug_window`,
+- `store_image_data` as a setting, switchable while recording,
 - the settings JSON in the session comment.
 
 ## 11. Known limitations

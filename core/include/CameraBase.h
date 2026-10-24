@@ -207,6 +207,12 @@ public:
     /// Buffer settings for the next start().
     void setBufferConfig(const BufferConfig& cfg);
     BufferConfig bufferConfig() const;
+    /// Switch storing to disk on (directory @p dirPath) or off (empty). While
+    /// running, the current ring starts or stops streaming without a restart:
+    /// on opens a new .uc2rb file from the next frame, off finishes and closes
+    /// it. Otherwise only BufferConfig::storagePath changes, for the next start().
+    /// @return false if the file cannot be created; storing is then off.
+    bool setStoragePath(const std::string& dirPath);
 
     /// Allocate a fresh ring buffer for the current geometry, open the session
     /// (disk streaming if a storage path is set) and start the device stream.

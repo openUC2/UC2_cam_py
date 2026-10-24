@@ -337,6 +337,46 @@ TEST_CASE("recording writes the header plus every saved frame", "[camera][sim][s
     CHECK(fs::exists(fs::path(path).replace_extension(".json")));
 }
 
+TEST_CASE("storing can be switched during a run without a restart", "[camera][sim][stream]")
+{
+    TempDir dir;
+    auto cam = makeSim();                     // starts without a storage path
+    REQUIRE(cam->start());
+    const auto ring = cam->ring();
+    REQUIRE(waitFrames(*cam, 3));
+    CHECK(cam->recordingFile().empty());
+
+    REQUIRE(cam->setStoragePath(dir.path.string()));
+    const std::string path = cam->recordingFile();
+    CHECK_FALSE(path.empty());
+    REQUIRE(waitFrames(*cam, ring->framesWritten() + 5));
+    REQUIRE(cam->setStoragePath(""));
+
+    CHECK(cam->ring() == ring);               // the same session went on
+    CHECK(cam->isRunning());
+    CHECK(cam->bufferConfig().storagePath.empty());
+    CHECK(ring->streamFramesSaved() >= 5);
+    CHECK(fs::file_size(path)
+          == sizeof(hik::UC2_SessionHeader)
+             + ring->streamFramesSaved() * (sizeof(hik::UC2_FrameHeader) + ring->frameBytes()));
+
+    const uint64_t size = fs::file_size(path);
+    REQUIRE(waitFrames(*cam, ring->framesWritten() + 3));
+    CHECK(fs::file_size(path) == size);       // switched off: the file stays as it was
+    cam->stop();
+}
+
+TEST_CASE("a storage path that cannot be created switches storing off", "[camera][sim][stream]")
+{
+    auto cam = makeSim();
+    REQUIRE(cam->start());
+    CHECK_FALSE(cam->setStoragePath("/dev/null/this-cannot-be-a-directory"));
+    CHECK(cam->bufferConfig().storagePath.empty());
+    CHECK(cam->isRunning());                  // the acquisition is not affected
+    CHECK_FALSE(cam->ring()->isStreaming());
+    cam->stop();
+}
+
 TEST_CASE("an image keeps its ring alive after the camera is gone", "[camera][sim]")
 {
     CameraBase::Image img;

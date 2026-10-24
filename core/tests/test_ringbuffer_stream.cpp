@@ -5,10 +5,13 @@
 
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "UC2_RingBuff.h"
@@ -396,4 +399,160 @@ TEST_CASE("destroying a recording buffer closes the file cleanly", "[ring][strea
     REQUIRE(readContainer(path, header, records));
     CHECK(records.size() == 4);
     CHECK(records.back().header.sequence == 3);
+}
+
+namespace {
+
+/// Small in-memory ring (no storage path) for the streaming switch tests.
+RingBuffer::Config toggleConfig(hik::FullPolicy policy)
+{
+    RingBuffer::Config cfg;
+    cfg.slotCount     = 8;
+    cfg.policy        = policy;
+    cfg.waitTimeoutMs = 5000;
+    return cfg;
+}
+
+void writeFrames(RingBuffer& rb, uint64_t from, uint64_t to)
+{
+    for (uint64_t i = from; i < to; ++i)
+    {
+        const std::vector<uint8_t> src = pattern(i, rb.frameBytes());
+        REQUIRE(rb.writeFrame(src.data(), src.size()));
+    }
+}
+
+} // namespace
+
+TEST_CASE("streaming can be switched on and off during a session", "[ring][stream]")
+{
+    TempDir dir("toggle");
+    RingBuffer rb(toggleConfig(hik::FullPolicy::Wait));
+    REQUIRE(rb.setImageSize(4, 4));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+    CHECK_FALSE(rb.isStreaming());
+    CHECK(rb.streamFilePath().empty());
+
+    writeFrames(rb, 0, 3);                    // RAM only
+    REQUIRE(rb.startStreaming(dir.str()));
+    CHECK(rb.isStreaming());
+    const std::string path = rb.streamFilePath();
+    writeFrames(rb, 3, 7);                    // these four go to the file
+    rb.stopStreaming();
+    CHECK_FALSE(rb.isStreaming());
+    CHECK(rb.isRecording());                  // the session carries on
+    writeFrames(rb, 7, 10);                   // RAM only again
+    rb.stopRecording();
+
+    CHECK(rb.framesWritten() == 10);
+    CHECK(rb.streamFramesSaved() == 4);
+    hik::UC2_SessionHeader header{};
+    std::vector<Record>    records;
+    REQUIRE(readContainer(path, header, records));
+    REQUIRE(records.size() == 4);
+    for (size_t k = 0; k < records.size(); ++k)
+    {
+        CHECK(records[k].header.sequence == 3 + k);
+        CHECK(records[k].payload == pattern(3 + k, rb.frameBytes()));
+    }
+}
+
+TEST_CASE("each switch-on opens a new file, a directory set early opens with the session", "[ring][stream]")
+{
+    TempDir dir("again");
+    RingBuffer rb(toggleConfig(hik::FullPolicy::Wait));
+    REQUIRE(rb.setImageSize(4, 4));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+
+    REQUIRE(rb.startStreaming(dir.str()));    // before the session: only remembered
+    CHECK_FALSE(rb.isStreaming());
+    REQUIRE(rb.startRecording());
+    CHECK(rb.isStreaming());
+    const std::string first = rb.streamFilePath();
+    writeFrames(rb, 0, 1);
+    rb.stopStreaming();
+
+    REQUIRE(rb.startStreaming(dir.str()));
+    const std::string second = rb.streamFilePath();
+    writeFrames(rb, 1, 3);
+    rb.stopRecording();                       // also closes the second file
+    CHECK_FALSE(rb.isStreaming());
+
+    CHECK(first != second);
+    CHECK(rb.streamFramesSaved() == 2);       // the counters follow the current file
+    hik::UC2_SessionHeader header{};
+    std::vector<Record>    a, b;
+    REQUIRE(readContainer(first, header, a));
+    REQUIRE(readContainer(second, header, b));
+    CHECK(a.size() == 1);
+    REQUIRE(b.size() == 2);
+    CHECK(b.front().header.sequence == 1);
+}
+
+TEST_CASE("a streaming directory that cannot be created leaves the session running", "[ring][stream]")
+{
+    RingBuffer rb(toggleConfig(hik::FullPolicy::Overwrite));
+    REQUIRE(rb.setImageSize(4, 4));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+
+    CHECK_FALSE(rb.startStreaming("/dev/null/this-cannot-be-a-directory"));
+    CHECK_FALSE(rb.startStreaming(""));
+    CHECK_FALSE(rb.isStreaming());
+    CHECK(rb.streamHasError());
+    CHECK(rb.isRecording());
+    writeFrames(rb, 0, 2);
+    CHECK(rb.framesWritten() == 2);
+}
+
+TEST_CASE("stopStreaming finishes although the producer keeps writing", "[ring][stream][mt]")
+{
+    TempDir dir("live");
+    // Wait: the writer holds the producer back, so it never overwrites a frame
+    // still being saved (no intentional payload race, see tsan.supp) and the
+    // writer can never catch up with the tip on its own - stopping has to end it.
+    RingBuffer rb(toggleConfig(hik::FullPolicy::Wait));
+    REQUIRE(rb.setImageSize(4, 4));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+
+    std::atomic<bool> done(false);
+    std::thread producer([&]
+    {
+        const std::vector<uint8_t> src = pattern(0, rb.frameBytes());
+        while (!done.load())
+        {
+            rb.writeFrame(src.data(), src.size());   // as fast as it goes
+        }
+    });
+
+    REQUIRE(rb.startStreaming(dir.str()));
+    const std::string path = rb.streamFilePath();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const auto t0 = std::chrono::steady_clock::now();
+    rb.stopStreaming();                        // must not chase the producer's moving tip
+    const auto took = std::chrono::steady_clock::now() - t0;
+    const uint64_t writtenAfterStop = rb.framesWritten();
+    const uint64_t handled          = rb.streamFramesSaved() + rb.streamFramesDropped();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    done.store(true);
+    producer.join();
+    rb.stopRecording();
+
+    CHECK(took < std::chrono::seconds(2));
+    CHECK(rb.streamFramesSaved() + rb.streamFramesDropped() == handled);   // nothing after the stop
+    CHECK(rb.streamFramesDropped() == 0);
+    CHECK(rb.framesWritten() > writtenAfterStop);                          // the producer went on
+
+    hik::UC2_SessionHeader header{};
+    std::vector<Record>    records;
+    REQUIRE(readContainer(path, header, records));
+    REQUIRE_FALSE(records.empty());
+    CHECK(records.size() == rb.streamFramesSaved());
+    CHECK(records.back().header.sequence < writtenAfterStop);
 }

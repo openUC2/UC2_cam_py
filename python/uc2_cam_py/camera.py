@@ -228,9 +228,18 @@ class Camera:
             )
             self._log.error(message)
             raise MemoryError(message)
-        if not self._store_image_data:
-            return
+        if self._store_image_data:
+            self._check_disk(log_disk_estimate)
 
+    def _check_disk(self, log_disk_estimate: bool) -> None:
+        """Check that the recording directory exists and holds one full buffer.
+
+        Raises:
+            OSError: The directory cannot be created, or the disk has less free
+                space than one full buffer.
+        """
+        frame_bytes = self._frame_bytes()
+        total = self._buffer_size * frame_bytes
         try:
             self._image_file_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -588,6 +597,50 @@ class Camera:
         if not ok:
             raise RuntimeError("the camera refused the ROI (see log)")
 
+    @property
+    def store_image_data(self) -> bool:
+        """bool: Whether every image is also written to disk (in ``image_file_path``).
+
+        Can be switched at any time. While recording, ``True`` opens a new
+        ``.uc2rb`` file that holds the images from the next one on, and ``False``
+        writes the images up to now and closes it - the acquisition, the buffer
+        and the image sequence carry on without a restart. Otherwise the value
+        applies from the next start(). Switching on checks the disk like the
+        initialisation (OSError if it fails; the value then stays False).
+        """
+        return self._store_image_data
+
+    @store_image_data.setter
+    def store_image_data(self, value: bool) -> None:
+        self._require_open()
+        if not isinstance(value, bool):
+            raise TypeError(f"store_image_data must be a bool, got {type(value).__name__}")
+        if value == self._store_image_data:
+            return
+        recording = self.is_recording
+        if not value:
+            path = self.recording_file
+            self._store_image_data = False
+            if not recording:
+                self._log.info("Recording to disk: off")
+                return
+            self._backend.set_storage_path("")
+            saved, dropped, _ = self._backend.stream_stats()
+            self._log.info(f"Recording to disk stopped: {path} ({saved} images saved, {dropped} dropped)")
+            return
+
+        self._check_disk(log_disk_estimate=True)
+        if recording and not self._backend.set_storage_path(str(self._image_file_path)):
+            _logging.flush()
+            message = "recording to disk could not be started (see the log for the reason)"
+            self._log.error(message)
+            raise RuntimeError(message)
+        self._store_image_data = True
+        if recording:
+            self._log.info(f"Recording to disk started: {self.recording_file}")
+        else:
+            self._log.info(f"Recording to disk: on from the next start(), in {self._image_file_path}")
+
     # ---------------------------------------------------------------- methods
 
     def get_last_image(self) -> ImgData | None:
@@ -736,7 +789,8 @@ def create_camera(
         start_on_init: Start recording right away.
         image_file_path: Directory for the ``.uc2rb`` files;
             None -> ``defaults.IMAGE_FILE_PATH``.
-        store_image_data: Write every image to disk (in ``image_file_path``).
+        store_image_data: Write every image to disk (in ``image_file_path``);
+            switchable later, also while recording (:attr:`Camera.store_image_data`).
         logger: Object with ``error``, ``warning``, ``info``, ``debug``
             methods; None -> ``logging.getLogger("uc2_cam_py")``.
         debug_window: Show the newest image in a window until the camera is

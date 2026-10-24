@@ -194,8 +194,10 @@ with uc2_cam_py.create_camera(
         if img.is_valid():              # not overwritten meanwhile -> result is consistent
             print(img.sequence, img.time_ns, result)
     meta: ImgMetaData = cam.get_image_info()
-    cam.stop()
+    cam.store_image_data = False        # stop writing to disk; the acquisition goes on
     print(cam.recording_file, meta.width, meta.height)
+    cam.store_image_data = True         # ... and on again: a new .uc2rb file, no restart
+    cam.stop()
 ```
 
 Live view without extra dependencies — `debug_window=True` is the only way to open a

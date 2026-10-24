@@ -462,6 +462,9 @@ PYBIND11_MODULE(_hik, m)
                 hik::UC2_SessionHeader h{};
                 if (!c.sessionHeader(h)) { return py::none(); }
                 return headerDict(h); })
+        .def("set_storage_path", &hik::CameraBase::setStoragePath, py::arg("path"),
+            py::call_guard<py::gil_scoped_release>(),
+            "bool: Store to disk in `path` from now on ('' = off); while running without a restart.")
         .def("recording_file", &hik::CameraBase::recordingFile)
         .def("frames_written", [](hik::CameraBase& c) -> uint64_t {
                 auto r = c.ring();

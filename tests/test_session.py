@@ -6,7 +6,9 @@ import json
 import time
 from pathlib import Path
 
-from uc2_cam_py import ImgMetaData
+import pytest
+
+from uc2_cam_py import ImgMetaData, _resources
 
 from conftest import BUFFER, wait_for_frames
 
@@ -77,3 +79,72 @@ def test_store_image_data_false_writes_nothing(open_camera, recording_dir) -> No
     cam.stop()
     assert cam.recording_file is None
     assert not recording_dir.exists() or not any(recording_dir.iterdir())
+
+
+# -------------------------------------------------- switching store_image_data
+
+def test_store_image_data_switches_while_recording(camera, recording_dir, rec_logger) -> None:
+    camera.start()
+    wait_for_frames(camera, 3)
+    session = camera.get_image_info().start_wall_ns
+    assert camera.recording_file is None
+
+    camera.store_image_data = True
+    assert camera.store_image_data
+    path = Path(camera.recording_file)
+    assert path.parent == recording_dir
+    wait_for_frames(camera, camera.get_last_image().sequence + 6)
+    camera.store_image_data = False
+    assert not camera.store_image_data
+
+    saved, _dropped, error = camera._backend.stream_stats()
+    assert saved > 0 and not error
+    meta = camera.get_image_info()
+    assert path.stat().st_size == SESSION_HEADER_BYTES + saved * (FRAME_HEADER_BYTES + meta.frame_bytes)
+
+    size = path.stat().st_size
+    last = camera.get_last_image().sequence
+    wait_for_frames(camera, last + 4)
+    assert camera.is_recording
+    assert camera.get_image_info().start_wall_ns == session   # the same session: no restart
+    assert camera.get_last_image().sequence > last            # its sequence just went on
+    assert path.stat().st_size == size                        # switched off: nothing more written
+    camera.stop()
+    assert rec_logger.has("INFO", "Recording to disk started")
+    assert rec_logger.has("INFO", "Recording to disk stopped")
+
+
+def test_store_image_data_set_while_stopped_applies_at_start(open_camera, recording_dir) -> None:
+    cam = open_camera(store_image_data=False)
+    cam.store_image_data = True
+    assert cam.recording_file is None
+    cam.start()
+    wait_for_frames(cam, 3)
+    cam.stop()
+    assert Path(cam.recording_file).parent == recording_dir
+
+    cam.store_image_data = False
+    cam.start()
+    wait_for_frames(cam, 2)
+    cam.stop()
+    assert cam.recording_file is None                         # the new session stayed in RAM
+
+
+def test_store_image_data_needs_a_bool_and_an_open_camera(open_camera) -> None:
+    cam = open_camera()
+    with pytest.raises(TypeError):
+        cam.store_image_data = 1
+    cam.close()
+    with pytest.raises(RuntimeError):
+        cam.store_image_data = True
+
+
+def test_switching_on_checks_the_disk(open_camera, rec_logger, monkeypatch) -> None:
+    cam = open_camera(store_image_data=False)
+    cam.start()
+    monkeypatch.setattr(_resources, "free_disk", lambda path: 10)
+    with pytest.raises(OSError):
+        cam.store_image_data = True
+    assert not cam.store_image_data
+    assert cam.recording_file is None and cam.is_recording
+    assert rec_logger.has("ERROR", "Not enough disk space")

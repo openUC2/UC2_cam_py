@@ -336,7 +336,7 @@ public:
     /// normally drawn from the camera after the buffer already exists.
     struct Config
     {
-        std::string storagePath;                      ///< directory for the container file; empty disables streaming
+        std::string storagePath;                      ///< directory for the container file; empty: RAM only (see startStreaming())
         uint32_t    slotCount     = 16;               ///< number of images the ring holds (>= 2)
         std::string comment;                          ///< free text stored in the session header
         FullPolicy  policy        = FullPolicy::Overwrite;  ///< behaviour when the next slot is unread
@@ -462,7 +462,7 @@ public:
     bool setMemoryOps(const UC2_MemoryOps& ops);
 
     /// Validate the geometry, allocate the region and lay out the slots. Also
-    /// creates the disk streamer when Config::storagePath is non-empty.
+    /// creates the (idle) disk streamer.
     /// @return true on success; on failure the buffer stays unconfigured.
     bool configure();
 
@@ -471,11 +471,12 @@ public:
 
     // --- Recording ------------------------------------------------------
 
-    /// Stamp the session start time and open every sink.
+    /// Stamp the session start time, open every sink and, if a streaming
+    /// directory is set (Config::storagePath or startStreaming()), a container file.
     /// @return true on success (also true when there is nothing to stream to).
     bool startRecording();
 
-    /// Flush and close every sink. Safe to call when not recording.
+    /// Flush and close every sink and the container file. Safe to call when not recording.
     void stopRecording();
 
     /// @return true between a successful startRecording() and stopRecording().
@@ -598,7 +599,23 @@ public:
 
     // --- Disk streaming --------------------------------------------------
 
-    /// @return path of the container file, or an empty string when not streaming.
+    /// Stream to a new container file in @p dirPath. During a session the file
+    /// opens at once and saves the frames committed from now on, while the
+    /// producer keeps running; otherwise it opens with the next startRecording().
+    /// Already streaming to @p dirPath: nothing happens. Thread-safe against the
+    /// producer and against start/stopRecording().
+    /// @return false if the buffer is not configured, @p dirPath is empty or
+    ///         the file cannot be created (then nothing is streamed).
+    bool startStreaming(const std::string& dirPath);
+
+    /// Stop streaming: the frames committed up to now are still written, then
+    /// the file is closed. The session and the producer carry on.
+    void stopStreaming();
+
+    /// @return true while a container file is being written.
+    bool isStreaming() const;
+
+    /// @return path of the current or last container file; empty if none was opened.
     std::string streamFilePath() const;
 
     uint64_t streamFramesSaved() const;    ///< frames written to the container
@@ -630,6 +647,14 @@ private:
     void dispatchFrame(const UC2_SlotRecord& rec, const uint8_t* payload, uint64_t nbytes);
     void destroySinks();
     void releaseRegion();
+
+    /// Call onSessionEnd() of the first @p count sinks (undoes a partial start).
+    void endSinks(size_t count);
+    /// Open a container file in m_streamDir and publish the streamer to the
+    /// producer. Caller holds m_streamMtx. @return false if the file cannot be opened.
+    bool openStreamLocked();
+    /// Unpublish the streamer, let it finish and close its file. Caller holds m_streamMtx.
+    void closeStreamLocked();
 
     Config                   m_cfg;
     UC2_MemoryOps            m_mem;
@@ -663,7 +688,15 @@ private:
     std::condition_variable  m_frameReady;  ///< a frame was committed
 
     std::vector<UC2_SinkOps> m_sinks;
+
+    // The built-in streamer is kept apart from m_sinks: that list must not
+    // change during a session, while streaming can be switched at any time.
+    // m_stream lives from configure() to the destructor, so the pointer the
+    // producer reads through m_liveStream never dangles.
     std::unique_ptr<FileStreamSink> m_stream;
+    std::atomic<FileStreamSink*>    m_liveStream{nullptr};   ///< m_stream while it writes a file, else null
+    std::string                     m_streamDir;             ///< directory to stream to; empty = RAM only
+    std::mutex                      m_streamMtx;             ///< serialises streaming with start/stopRecording()
 };
 
 // ---------------------------------------------------------------------------
@@ -672,15 +705,21 @@ private:
 
 /// Streams committed frames to a single append-only container file.
 ///
-/// Layout of `<path>/uc2_<cameraId>_<YYYYmmdd_HHMMSS>.uc2rb`:
+/// Layout of `<path>/uc2_<cameraId>_<YYYYmmdd_HHMMSS>.uc2rb` (time the file was opened):
 /// @code
 ///   [UC2_SessionHeader  8448 B]
-///   [UC2_FrameHeader 64 B][payload]   sequence 0
-///   [UC2_FrameHeader 64 B][payload]   sequence 1
+///   [UC2_FrameHeader 64 B][payload]   sequence n
+///   [UC2_FrameHeader 64 B][payload]   sequence n + 1
 ///   ...
 /// @endcode
-/// A `.json` sidecar with the same metadata is written next to it so the
-/// recording can be identified without a parser.
+/// n is the first frame committed after the file was opened: 0 when streaming
+/// from the session start, larger when it was switched on during the session.
+/// The header is the session's, so its start stamps stay the time base of the
+/// frames' monotonic timestamps. A `.json` sidecar with the same metadata is
+/// written next to it so the recording can be identified without a parser.
+///
+/// One instance can open and close several files in turn (RingBuffer::startStreaming()
+/// / stopStreaming()); the counters below always refer to the current or last file.
 ///
 /// The frame callback runs on the producer thread and only bumps a counter; a
 /// dedicated writer thread pulls the payload out of the ring as a registered
@@ -701,12 +740,17 @@ public:
     ///         not own the instance (UC2_SinkOps::destroy is nullptr).
     UC2_SinkOps ops();
 
-    std::string filePath() const;     ///< container path, empty until the session opened
+    std::string filePath() const;     ///< container path, empty until a file was opened
     uint64_t    framesSaved() const;  ///< frames appended to the container
     uint64_t    framesDropped() const;///< frames recycled before they could be saved
     bool        hasError() const;     ///< a write or open failed
 
 private:
+    friend class RingBuffer;   // drives the session hooks of its built-in streamer directly
+
+    /// Directory for the next file; ignored while a file is open.
+    void setDirectory(const std::string& dirPath);
+
     static int  sessionStartThunk(void* ctx, const UC2_SessionHeader* header);
     static int  frameThunk(void* ctx, const UC2_FrameRef* frame);
     static void sessionEndThunk(void* ctx);
@@ -727,6 +771,7 @@ private:
     std::condition_variable m_cv;
     bool                  m_running = false;
     uint64_t              m_cursor  = 0;     ///< next sequence to save
+    uint64_t              m_stopAt  = 0;     ///< frames to save in all, fixed by onSessionEnd()
 
     uint32_t              m_consumer = kAnonymousConsumer;
     std::atomic<uint64_t> m_saved;

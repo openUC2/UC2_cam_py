@@ -353,13 +353,14 @@ RingBuffer::RingBuffer(const Config& cfg)
     , m_mem(heapMemoryOps())
     , m_comment(cfg.comment)
     , m_writeBusy(false)
+    , m_streamDir(cfg.storagePath)
 {
 }
 
 RingBuffer::~RingBuffer()
 {
-    stopRecording();
-    m_stream.reset();     // joins the writer thread before the region goes away
+    stopRecording();      // closes the container file, joining the writer thread
+    m_stream.reset();     // ... before the region goes away
     destroySinks();
     releaseRegion();
 }
@@ -571,15 +572,8 @@ bool RingBuffer::configure()
 
     m_configured = true;
 
-    if (!m_cfg.storagePath.empty())
-    {
-        m_stream.reset(new FileStreamSink(*this, m_cfg.storagePath));
-        if (!addSink(m_stream->ops()))
-        {
-            ERR("RingBuffer::configure: could not register the disk streamer");
-            m_stream.reset();
-        }
-    }
+    // Created even without a directory: it then idles until startStreaming().
+    m_stream.reset(new FileStreamSink(*this, m_streamDir));
 
     INFO("RingBuffer: " + std::to_string(m_cfg.slotCount) + " slots x "
          + std::to_string(m_width) + "x" + std::to_string(m_height) + "x"
@@ -670,6 +664,7 @@ bool RingBuffer::startRecording()
         ERR("RingBuffer::startRecording: buffer is not configured");
         return false;
     }
+    std::lock_guard<std::mutex> lk(m_streamMtx);
     if (isRecording())
     {
         return true;
@@ -684,17 +679,16 @@ bool RingBuffer::startRecording()
         if (s.onSessionStart != nullptr && s.onSessionStart(s.ctx, m_header) != 0)
         {
             ERR("RingBuffer::startRecording: a sink refused to open the session");
-            // Unwind the sinks that did open, so none is left half-started.
-            for (size_t i = 0; i < started; ++i)
-            {
-                if (m_sinks[i].onSessionEnd != nullptr)
-                {
-                    m_sinks[i].onSessionEnd(m_sinks[i].ctx);
-                }
-            }
+            endSinks(started);   // none is left half-started
             return false;
         }
         ++started;
+    }
+    if (!m_streamDir.empty() && !openStreamLocked())
+    {
+        ERR("RingBuffer::startRecording: the disk streamer refused to open the session");
+        endSinks(started);
+        return false;
     }
 
     m_control->recording.store(1, std::memory_order_release);
@@ -704,19 +698,30 @@ bool RingBuffer::startRecording()
 
 void RingBuffer::stopRecording()
 {
-    if (!m_configured || !isRecording())
+    if (!m_configured)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(m_streamMtx);
+    if (!isRecording())
     {
         return;
     }
     m_control->recording.store(0, std::memory_order_release);
-    for (UC2_SinkOps& s : m_sinks)
+    closeStreamLocked();
+    endSinks(m_sinks.size());
+    INFO("RingBuffer: recording stopped after " + std::to_string(framesWritten()) + " frames");
+}
+
+void RingBuffer::endSinks(size_t count)
+{
+    for (size_t i = 0; i < count && i < m_sinks.size(); ++i)
     {
-        if (s.onSessionEnd != nullptr)
+        if (m_sinks[i].onSessionEnd != nullptr)
         {
-            s.onSessionEnd(s.ctx);
+            m_sinks[i].onSessionEnd(m_sinks[i].ctx);
         }
     }
-    INFO("RingBuffer: recording stopped after " + std::to_string(framesWritten()) + " frames");
 }
 
 bool RingBuffer::isRecording() const
@@ -726,6 +731,12 @@ bool RingBuffer::isRecording() const
 
 void RingBuffer::dispatchFrame(const UC2_SlotRecord& rec, const uint8_t* payload, uint64_t nbytes)
 {
+    // Only rings the writer's bell; the writer thread pulls the frame itself.
+    if (FileStreamSink* stream = m_liveStream.load(std::memory_order_acquire))
+    {
+        stream->onFrame();
+    }
+
     if (m_sinks.empty() || !isRecording())
     {
         return;
@@ -1235,6 +1246,73 @@ uint32_t RingBuffer::slotFlags(uint32_t slot) const
     return rec ? rec->flags.load(std::memory_order_acquire) : 0;
 }
 
+bool RingBuffer::startStreaming(const std::string& dirPath)
+{
+    if (!m_configured)
+    {
+        ERR("RingBuffer::startStreaming: buffer is not configured");
+        return false;
+    }
+    if (dirPath.empty())
+    {
+        ERR("RingBuffer::startStreaming: no directory given");
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(m_streamMtx);
+    if (m_liveStream.load() != nullptr)
+    {
+        if (dirPath == m_streamDir)
+        {
+            return true;
+        }
+        closeStreamLocked();   // another directory: finish this file, open a new one there
+    }
+    m_streamDir = dirPath;
+    if (!isRecording())
+    {
+        return true;           // the file opens with the next startRecording()
+    }
+    if (!openStreamLocked())
+    {
+        m_streamDir.clear();
+        return false;
+    }
+    return true;
+}
+
+void RingBuffer::stopStreaming()
+{
+    std::lock_guard<std::mutex> lk(m_streamMtx);
+    m_streamDir.clear();
+    closeStreamLocked();
+}
+
+bool RingBuffer::isStreaming() const
+{
+    return m_liveStream.load(std::memory_order_acquire) != nullptr;
+}
+
+bool RingBuffer::openStreamLocked()
+{
+    m_stream->setDirectory(m_streamDir);
+    if (m_stream->onSessionStart(*m_header) != 0)
+    {
+        return false;
+    }
+    m_liveStream.store(m_stream.get(), std::memory_order_release);
+    return true;
+}
+
+void RingBuffer::closeStreamLocked()
+{
+    // Unpublish first, so the producer stops ringing; a ring already under
+    // way only reaches the sink's own mutex and is harmless.
+    if (m_liveStream.exchange(nullptr, std::memory_order_acq_rel) != nullptr)
+    {
+        m_stream->onSessionEnd();
+    }
+}
+
 std::string RingBuffer::streamFilePath() const
 {
     return m_stream ? m_stream->filePath() : std::string();
@@ -1310,6 +1388,10 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
     {
         return 0;   // already open
     }
+    // The counters describe the file about to be opened, not an earlier one.
+    m_saved.store(0);
+    m_dropped.store(0);
+    m_error.store(false);
 
     std::error_code ec;
     std::filesystem::create_directories(m_dirPath, ec);
@@ -1326,7 +1408,9 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
         camera = "cam";
     }
 
-    const std::time_t secs = static_cast<std::time_t>(header.startWallNs / 1000000000ll);
+    // Named after the moment the file opens: the session start, or later when
+    // streaming was switched on during the session.
+    const std::time_t secs = static_cast<std::time_t>(wallClockNs() / 1000000000ll);
     std::tm tmv{};
     ::gmtime_r(&secs, &tmv);
     char stamp[32];
@@ -1336,12 +1420,16 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
     // second would otherwise truncate the recording that just finished.
     const std::filesystem::path base =
         std::filesystem::path(m_dirPath) / ("uc2_" + camera + "_" + stamp);
-    m_filePath = base.string() + ".uc2rb";
-    for (int n = 1; n < 1000 && std::filesystem::exists(m_filePath); ++n)
+    std::string path = base.string() + ".uc2rb";
+    for (int n = 1; n < 1000 && std::filesystem::exists(path); ++n)
     {
         char suffix[16];   // room for any int, keeps -Wformat-truncation quiet
         std::snprintf(suffix, sizeof(suffix), "_%03d", n);
-        m_filePath = base.string() + suffix + ".uc2rb";
+        path = base.string() + suffix + ".uc2rb";
+    }
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);   // filePath() may be read from any thread
+        m_filePath = path;
     }
 
     m_fd = ::open(m_filePath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -1402,6 +1490,9 @@ void FileStreamSink::onSessionEnd()
         std::lock_guard<std::mutex> lk(m_mtx);
         wasRunning = m_running;
         m_running  = false;
+        // Fix the end now: when streaming stops during a session the producer
+        // keeps committing, and draining up to its moving tip would never end.
+        m_stopAt = m_owner.framesWritten();
     }
     if (wasRunning)
     {
@@ -1440,7 +1531,7 @@ void FileStreamSink::writerLoop()
             m_cv.wait_for(lk, std::chrono::milliseconds(50),
                           [this] { return !m_running || m_owner.framesWritten() > m_cursor; });
             run    = m_running;
-            target = m_owner.framesWritten();
+            target = run ? m_owner.framesWritten() : std::min(m_owner.framesWritten(), m_stopAt);
             if (!run && target <= m_cursor)
             {
                 break;   // stopped and fully drained
@@ -1550,6 +1641,14 @@ bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header) const
     const bool ok = writevAll(fd, &iov, 1);
     ::close(fd);
     return ok;
+}
+
+void FileStreamSink::setDirectory(const std::string& dirPath)
+{
+    if (m_fd < 0)
+    {
+        m_dirPath = dirPath;
+    }
 }
 
 std::string FileStreamSink::filePath() const
