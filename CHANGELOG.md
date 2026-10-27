@@ -6,6 +6,14 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Build without the MVS SDK:** if `External/hik/MVS` is missing, the package still builds
+  (CMake warns) with the simulated camera only. Importing it logs an ERROR saying so;
+  `vendors()` leaves HikRobot out, and `create_camera(vendor="HikRobot")` raises
+  `RuntimeError`. The CMake switch `HIK_MVS` (`AUTO` | `ON` | `OFF`) decides; `_hik.HAVE_MVS`
+  tells which build is loaded.
+
 ## [1.0.0] - 2026-10-27
 
 First versioned release. The earlier 0.x states have no changelog; the git history covers them.

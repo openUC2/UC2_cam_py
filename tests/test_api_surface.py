@@ -101,4 +101,5 @@ def test_debug_window_is_the_only_way_to_a_window() -> None:
 def test_all_exports_exist() -> None:
     for name in uc2_cam_py.__all__:
         assert hasattr(uc2_cam_py, name), name
-    assert set(uc2_cam_py.vendors()) >= {"HikRobot", "Simulated"}
+    assert "Simulated" in uc2_cam_py.vendors()
+    assert ("HikRobot" in uc2_cam_py.vendors()) == uc2_cam_py._hik.HAVE_MVS   # needs the MVS SDK

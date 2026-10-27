@@ -20,11 +20,7 @@ include(Catch)
 
 # No-camera unit tests (always built when HIK_BUILD_TESTS is ON).
 set(HIK_TEST_SOURCES
-    test_mvserror.cpp
-    test_captureoptions.cpp
     test_imagewindow.cpp
-    test_sdk_smoke.cpp
-    test_roi_align.cpp
     test_log.cpp
     test_camera_helpers.cpp
     test_simcamera.cpp
@@ -35,8 +31,17 @@ set(HIK_TEST_SOURCES
     test_camipc.cpp
     test_worker.cpp)
 
+# Tests of the code that talks to the MVS SDK: only in a build with it.
+if(HIK_HAVE_MVS)
+    list(APPEND HIK_TEST_SOURCES
+        test_mvserror.cpp
+        test_captureoptions.cpp
+        test_sdk_smoke.cpp
+        test_roi_align.cpp)
+endif()
+
 # Camera-dependent integration tests (opt-in).
-if(HIK_ENABLE_HARDWARE_TESTS)
+if(HIK_ENABLE_HARDWARE_TESTS AND HIK_HAVE_MVS)
     list(APPEND HIK_TEST_SOURCES test_capture_hw.cpp)
 endif()
 
@@ -49,7 +54,9 @@ target_link_libraries(hikcam_core_tests PRIVATE
 # the wrong software version (fake_worker.cpp).
 add_executable(uc2_cam_fake_worker fake_worker.cpp)
 target_link_libraries(uc2_cam_fake_worker PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
-set_target_properties(uc2_cam_fake_worker PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+if(HIK_HAVE_MVS)
+    set_target_properties(uc2_cam_fake_worker PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+endif()
 
 add_dependencies(hikcam_core_tests uc2_cam_worker uc2_cam_fake_worker)
 target_compile_definitions(hikcam_core_tests PRIVATE

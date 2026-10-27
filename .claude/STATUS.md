@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `bda6bf3` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Versionierung eingeführt, Version 1.0.0 (oberster Eintrag). Davor:
-Flush-Fehler behoben, Offset und Schrotrauschen im simulierten Bild, jede Kamera in einem
-eigenen Prozess (`uc2_cam_worker`, Ring Buffer in Shared Memory).
+**Stand:** 2026-10-27 · Branch `main` · Basis-Commit `4b91fdd` (Merge PR #1; Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Das Paket baut auch ohne MVS-SDK, dann nur mit „Simulated“
+(oberster Eintrag). Davor: Versionierung (1.0.0), Flush-Fehler, Rauschen im simulierten Bild,
+jede Kamera in einem eigenen Prozess.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,72 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Versionierung eingeführt: SemVer, eine Quelle `VERSION`, Version 1.0.0 — 2026-10-27
+### Build ohne MVS-SDK: dann nur „Simulated“, mit ERROR beim Import — 2026-10-27
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md` (überschreibt den Versionierungsplan),
+  freigegeben 2026-10-27.
+  - Vom Nutzer entschieden: `create_camera()` mit dem Standard-Hersteller HikRobot wirft ohne
+    SDK `RuntimeError` und weicht **nicht** auf Simulated aus.
+  - Vorher brach der Build ohne `External/hik/MVS` mit FATAL_ERROR ab. Ein frischer Checkout
+    war so nicht baubar, denn das SDK ist nicht in Git.
+- **CMake:**
+  - `HIK_MVS` = `AUTO` (Standard) | `ON` | `OFF` in `core/CMakeLists.txt`.
+    - AUTO: Fehlt das SDK, gibt es eine WARNING statt des Abbruchs.
+    - ON und ein ausdrücklich gesetztes `-DMVS_ROOT`: Das SDK ist Pflicht.
+  - Ergebnis `HIK_HAVE_MVS`: als PUBLIC-Definition `HIK_HAVE_MVS=1/0`, dazu im Cache für die
+    Wurzel. `HIKCAMTEST_MVS_*` werden ohne SDK geleert.
+  - Ohne SDK entfallen: `MvsCamera/MvsError/CaptureApp/HikCamera.cpp`, Include, Bibliothek,
+    DT_RPATH, die rpaths, `HikStandAlone` und die Installation von `_mvs/`.
+  - `CMAKE_CONFIGURE_DEPENDS` auf `External/hik`: Ein später geholtes SDK löst das
+    Neu-Konfigurieren selbst aus (geprüft mit `touch External/hik`).
+- **C++:**
+  - Neuer SDK-freier Header `DeviceSummary.h`; `DeviceInfo : DeviceSummary` (+ `raw`).
+  - `CamWorker`: Ohne SDK wirft HikRobot `runtime_error` „…built without the MVS SDK“.
+  - Bindings:
+    - `_hik.HAVE_MVS`; Python-`DeviceInfo` = `DeviceSummary`
+    - `list_devices` → `[]`, `initialize` → False, `sdk_path` → `""`
+    - `run_connection_test` → RuntimeError; keine Klasse `HikCamera`
+- **Python:**
+  - `Camera._unavailable()`; `vendors()` und `list_cameras()` lassen nicht verfügbare
+    Hersteller aus.
+  - `hikrobot.NO_MVS_MESSAGE`: von `_create_backend` geworfen und von `create_camera` als
+    „Opening a HikRobot camera failed: …“ geloggt.
+  - `__init__`: ERROR beim Import (ohne Logging-Konfiguration über lastResort auf stderr).
+- **Tests:**
+  - Neu: `test_without_the_mvs_sdk_only_the_simulated_camera_is_available` (monkeypatch
+    `HAVE_MVS=False`, läuft in jedem Build).
+  - Neu: `test_a_build_without_the_sdk_says_so_…` (nur ohne SDK, Import-ERROR per Subprozess).
+  - C++ „opening errors…“ mit einem Zweig ohne SDK.
+  - SDK-gebunden (`needs_mvs`/`#if`): die 2 SDK-Pfad-Tests, der `_discover`-Fehlertest, die
+    MVS-Testdateien.
+  - **Abweichung vom Plan:** In `test_camera_helpers.cpp` sind **vier** Tests geklammert, nicht
+    nur der PFNC-Vergleich. Auch die `pixelLayout`/`unpackedAlternatives`-Tests verwenden
+    SDK-Codes (`PixelType_Gvsp_BayerGB10` u. a.), für die es keine Projektkonstanten gibt.
+    Sie laufen im Build mit SDK.
+- **Verifikation:**
+  - Mit SDK: `uv run all_tests` → C++ 138/138, Python 186 passed / 22 skipped;
+    `build/core` 134/134; `ctest --preset tsan`/`asan` 138/138; ruff sauber, Pyright 0 Fehler;
+    das Wheel enthält 37 Dateien unter `_mvs/`.
+  - Core ohne SDK (`build/core-nomvs`, `-DHIK_MVS=OFF`): keine Warnung, 119/119; der Worker
+    hat kein `libMvCameraControl` und keinen RPATH.
+  - Frischer Checkout ohne SDK:
+    - `git ls-files -co --exclude-standard` → `build/fresh-checkout`, also mit den neuen,
+      noch nicht committeten Dateien.
+    - `uv build` → WARNING, Wheel ohne `_mvs/`.
+    - venv `build/nomvs-venv`: Der Import zeigt den ERROR auf stderr, `vendors() ==
+      ["Simulated"]`.
+    - pytest gegen dieses Wheel: 181 passed / 24 skipped (ohne `test_devtasks.py`); die drei
+      Tests für „ohne SDK“ sind grün.
+  - Wegwerf-Verzeichnisse unter `build/`: `fresh-checkout`, `nomvs-dist`, `nomvs-venv`,
+    `core-nomvs`.
+- **Doku:** README „Requirements“, `External/hik/README.md`, Interface-Doku §8 HikRobot
+  „Availability“ und `vendors()`, CHANGELOG „Unreleased“ (nächstes Release 1.1.0).
+
+### Versionierung eingeführt: SemVer, eine Quelle `VERSION`, Version 1.0.0 — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`005b393`, gemergt als `4b91fdd`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27. Vom Nutzer
   entschieden:
@@ -74,7 +137,10 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 - **Hinweis TSan:** Wer die Testbinary direkt unter TSan startet, braucht `TSAN_OPTIONS` mit
   `tools/sanitizers/tsan.supp` wie im Preset. Sonst meldet der absichtlich „reißende“
   Seqlock-Test `test_ringbuffer_mt.cpp` Races.
-- **Offen:** Git-Tag `v1.0.0` nach dem Commit; Branch klären (aktiv ist `transfer_to_processes`).
+- **Tag:** `v1.0.0` existiert (vom Nutzer, auch auf origin), zeigt aber auf `1be0de2`, den Stand
+  vor Kamera-Prozess und Versionierung. Richtig wäre `4b91fdd`. Versetzen nur durch den Nutzer
+  (`git tag -f`/`push` gesperrt): `git tag -f -a v1.0.0 4b91fdd -m "uc2_cam_py 1.0.0"`, dann
+  `git push --force origin v1.0.0`.
 
 ### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
 
@@ -461,7 +527,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 206 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 208 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -483,6 +549,9 @@ ctest --preset debug              # 138 Tests; ebenso --preset asan / tsan / pro
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
 ctest --test-dir build/core       # 134 Tests (ohne [hardware])
+
+# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 119 Tests. HIK_MVS=AUTO|ON|OFF.
+cmake -S core -B build/core-nomvs -G Ninja -DHIK_BUILD_TESTS=ON -DHIK_MVS=OFF
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 

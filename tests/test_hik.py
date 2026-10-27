@@ -19,6 +19,9 @@ import pytest
 
 import uc2_cam_py
 
+#: Tests of the bundled MVS SDK; a build without it has none.
+needs_mvs = pytest.mark.skipif(not uc2_cam_py._hik.HAVE_MVS, reason="built without the MVS SDK")
+
 
 def test_import_and_version() -> None:
     """The package imports and exposes the expected public API; one version everywhere."""
@@ -49,12 +52,31 @@ def test_the_camera_process_reports_the_same_version() -> None:
     assert out.stdout.strip() == f"uc2_cam_worker {uc2_cam_py.__version__}"
 
 
+@pytest.mark.skipif(uc2_cam_py._hik.HAVE_MVS, reason="only in a build without the MVS SDK")
+def test_a_build_without_the_sdk_says_so_and_offers_only_the_simulated_camera() -> None:
+    """No MVS SDK at build time: importing logs why HikRobot is missing, and nothing of it works."""
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-c", "import uc2_cam_py"], capture_output=True, text=True,
+                         check=True, timeout=60)
+    assert "HikRobot cameras are not available" in out.stderr     # logging.lastResort -> stderr
+    assert "uv run fetch_mvs" in out.stderr                       # and how to add them
+    assert uc2_cam_py.vendors() == ["Simulated"]
+    assert uc2_cam_py.list_devices() == []
+    assert uc2_cam_py._hik.sdk_path() == ""
+    assert not hasattr(uc2_cam_py._hik, "HikCamera")
+    with pytest.raises(RuntimeError, match="built without the MVS SDK"):
+        uc2_cam_py.run_connection_test(frames=1)
+
+
 def test_list_devices_returns_list() -> None:
     """list_devices() always returns a list (empty when no camera is present)."""
     devices = uc2_cam_py.list_devices()
     assert isinstance(devices, list)
 
 
+@needs_mvs
 def test_the_sdk_comes_from_the_package_not_from_an_installation() -> None:
     """The MVS SDK is the copy in uc2_cam_py/_mvs; nothing is loaded from /opt/MVS."""
     import os
@@ -73,6 +95,7 @@ def test_the_sdk_comes_from_the_package_not_from_an_installation() -> None:
     assert os.environ["ALLUSERSPROFILE"].endswith("uc2_cam_py")    # GenICam cache not in /opt/MVS
 
 
+@needs_mvs
 def test_the_camera_process_loads_the_sdk_of_the_package_too(tmp_path) -> None:
     """The camera process (separate_process=True) uses the same SDK copy, never /opt/MVS."""
     from pathlib import Path

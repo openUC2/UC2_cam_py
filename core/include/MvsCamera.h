@@ -6,18 +6,15 @@
 #include <string>
 #include <vector>
 
+#include "DeviceSummary.h"
 #include "MvCameraControl.h"
 
 namespace hik {
 
-/// Short, human-readable description of one enumerated device.
-struct DeviceInfo
+/// One enumerated device: its description plus the SDK's own descriptor,
+/// which opening the device needs.
+struct DeviceInfo : DeviceSummary
 {
-    std::string transport;   ///< "GigE", "USB3", "GenTL-GigE", ...
-    std::string modelName;   ///< camera model
-    std::string serial;      ///< serial number
-    std::string userName;    ///< user-defined name (may be empty)
-    std::string ip;          ///< current IP (GigE only, else empty)
     MV_CC_DEVICE_INFO raw{};     // POD, safe to copy by value
 };
 

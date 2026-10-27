@@ -134,9 +134,15 @@ sequenceDiagram
 
 ## Requirements
 
-- **The HikRobot MVS SDK — no installation needed.** Put HikRobot's Linux packages
+- **The HikRobot MVS SDK — optional, no installation needed.** Put HikRobot's Linux packages
   (`MVS-<version>_Linux_<arch>_<date>.zip`, x86_64 and/or aarch64) into `External/hik/`
   and run `uv run fetch_mvs` once; see [External/hik/README.md](External/hik/README.md).
+  **Without it** everything still builds - CMake warns - but without HikRobot support: only
+  the `"Simulated"` camera is available, importing `uc2_cam_py` logs an ERROR saying so,
+  `vendors()` lists only `"Simulated"`, and `create_camera(vendor="HikRobot")` (the default
+  vendor) raises `RuntimeError`. After `fetch_mvs`, build again / reinstall the package.
+  The CMake switch `HIK_MVS` decides: `AUTO` (default: use the SDK if it is there), `ON`
+  (required, as is an explicit `-DMVS_ROOT`), `OFF` (build without it).
   The SDK is proprietary and therefore not in git. CMake uses only this copy (an
   `/opt/MVS` installation is ignored; `-DMVS_ROOT=/path` overrides it deliberately), and the
   installed Python package carries the runtime libraries in `uc2_cam_py/_mvs/`.

@@ -43,8 +43,11 @@ def register_vendor(cls: type[Camera]) -> type[Camera]:
 
 
 def vendors() -> list[str]:
-    """Names of the available vendors (e.g. ``["HikRobot", "Simulated"]``)."""
-    return [c.VENDOR for c in _VENDORS.values()]
+    """Names of the available vendors (e.g. ``["HikRobot", "Simulated"]``).
+
+    A vendor this build cannot drive is left out: without the MVS SDK, HikRobot.
+    """
+    return [c.VENDOR for c in _VENDORS.values() if c._unavailable() is None]
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,8 @@ def list_cameras() -> list[CameraInfo]:
     """
     found: list[CameraInfo] = []
     for cls in _VENDORS.values():
+        if cls._unavailable() is not None:
+            continue
         try:
             found.extend(cls._discover())
         except Exception as exc:  # noqa: BLE001 - one vendor must not hide the others
@@ -181,6 +186,11 @@ class Camera:
     def _discover(cls) -> list[CameraInfo]:
         """The cameras of this vendor that can be opened now (for :func:`list_cameras`)."""
         return []
+
+    @classmethod
+    def _unavailable(cls) -> str | None:
+        """Why this build cannot drive the vendor at all, or None if it can."""
+        return None
 
     def _model_info(self) -> dict[str, Any] | None:
         """Static model data (pixel_pitch_um, pixel_size_um, pixel_count) or None."""

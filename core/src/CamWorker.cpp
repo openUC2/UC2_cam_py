@@ -2,11 +2,14 @@
 
 #include "CamIpc.h"
 #include "CameraBase.h"
-#include "HikCamera.h"
-#include "MvsCamera.h"
 #include "SimCamera.h"
 #include "UC2Version.h"
 #include "hikLog.h"
+
+#if HIK_HAVE_MVS
+#include "HikCamera.h"
+#include "MvsCamera.h"
+#endif
 
 #include <signal.h>
 #include <sys/prctl.h>
@@ -248,6 +251,7 @@ void Worker::open(Message& req)
 
     if (vendor == "HikRobot")
     {
+#if HIK_HAVE_MVS
         if (!options.empty())
         {
             throw std::invalid_argument("HikCamera: unexpected option '" + options.front().first + "'");
@@ -258,6 +262,10 @@ void Worker::open(Message& req)
         }
         m_sdk = true;
         m_cam = std::make_shared<HikCamera>(connection, serial, static_cast<int>(index));
+#else
+        (void)index;   // only HikRobot selects by index
+        throw std::runtime_error("HikRobot cameras are not available: uc2_cam_py was built without the MVS SDK");
+#endif
     }
     else if (vendor == "Simulated")
     {
@@ -648,10 +656,12 @@ int Worker::run()
     m_sim = nullptr;
     m_announced.reset();
     setLogSink(nullptr, nullptr);
+#if HIK_HAVE_MVS
     if (m_sdk)
     {
         MvsCamera::finalizeSdk();
     }
+#endif
     return 0;
 }
 

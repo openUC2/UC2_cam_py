@@ -99,9 +99,24 @@ def test_context_manager_closes(open_camera) -> None:
 def test_missing_hikrobot_camera_raises_and_logs(rec_logger, tmp_path) -> None:
     if hik_camera_connected():
         pytest.skip("a camera is connected")
-    with pytest.raises(RuntimeError, match="no HikRobot camera"):
+    reason = "no HikRobot camera" if uc2_cam_py._hik.HAVE_MVS else "built without the MVS SDK"
+    with pytest.raises(RuntimeError, match=reason):
         uc2_cam_py.create_camera(vendor="HikRobot", store_image_data=False, logger=rec_logger)
     assert rec_logger.has("ERROR", "Opening a HikRobot camera failed")
+
+
+def test_without_the_mvs_sdk_only_the_simulated_camera_is_available(monkeypatch, rec_logger, open_camera) -> None:
+    """A build without the MVS SDK (pretended here, so it runs in every build)."""
+    monkeypatch.setattr(uc2_cam_py._hik, "HAVE_MVS", False)
+    assert uc2_cam_py.vendors() == ["Simulated"]
+    assert [c.vendor for c in uc2_cam_py.list_cameras()] == ["Simulated"]
+    assert defaults.VENDOR == "HikRobot"
+    for vendor in ("HikRobot", None):   # asked for by name, and as the default vendor: no fallback
+        rec_logger.clear()
+        with pytest.raises(RuntimeError, match="built without the MVS SDK"):
+            uc2_cam_py.create_camera(vendor=vendor, store_image_data=False, logger=rec_logger)
+        assert rec_logger.has("ERROR", "Opening a HikRobot camera failed: HikRobot cameras are not available")
+    assert open_camera("Simulated").VENDOR == "Simulated"
 
 
 @pytest.mark.hardware
@@ -127,6 +142,7 @@ def test_list_cameras_offers_one_simulated_camera_that_opens(open_camera) -> Non
     assert (cam.model, cam.serial) == (sims[0].model, sims[0].serial)
 
 
+@pytest.mark.skipif(not uc2_cam_py._hik.HAVE_MVS, reason="built without the MVS SDK: HikRobot is not searched")
 def test_list_cameras_skips_a_vendor_whose_search_fails(monkeypatch, caplog) -> None:
     def fail(cls):
         raise RuntimeError("SDK not initialised")

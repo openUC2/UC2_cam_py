@@ -1,5 +1,6 @@
 # Example programs built against the core library:
-#   HikStandAlone   - terminal capture tool (needs a connected camera)
+#   HikStandAlone   - terminal capture tool (needs a connected camera and the
+#                     MVS SDK, so it is left out of a build without the SDK)
 #   RingBuffExample - ring-buffer walkthrough with simulated frames (no camera)
 
 function(hik_add_example name source)
@@ -12,12 +13,15 @@ function(hik_add_example name source)
 
     # hikcam_core pulls in libMvCameraControl; find it at runtime without
     # MVCAM_COMMON_RUNENV / LD_LIBRARY_PATH having to be exported.
-    set_target_properties(${name} PROPERTIES
-        BUILD_RPATH   "${HIKCAMTEST_MVS_LIB_DIR}"
-        INSTALL_RPATH "${HIKCAMTEST_MVS_LIB_DIR}")
+    if(HIK_HAVE_MVS)
+        set_target_properties(${name} PROPERTIES
+            BUILD_RPATH   "${HIKCAMTEST_MVS_LIB_DIR}"
+            INSTALL_RPATH "${HIKCAMTEST_MVS_LIB_DIR}")
+    endif()
 endfunction()
 
-hik_add_example(HikStandAlone   HikStandalone.cpp)
 hik_add_example(RingBuffExample RingBuffExample.cpp)
-
-install(TARGETS HikStandAlone RUNTIME DESTINATION bin)
+if(HIK_HAVE_MVS)
+    hik_add_example(HikStandAlone HikStandalone.cpp)
+    install(TARGETS HikStandAlone RUNTIME DESTINATION bin)
+endif()

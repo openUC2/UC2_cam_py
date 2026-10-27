@@ -305,7 +305,20 @@ TEST_CASE("opening errors arrive as the exception types of the in-process path",
                     std::invalid_argument);
     CHECK_THROWS_AS(RemoteCamera(kWorker, "Simulated", "", "", -1, { { "sensor_width", "-3" } }),
                     std::invalid_argument);
+#if HIK_HAVE_MVS
     CHECK_THROWS_AS(RemoteCamera(kWorker, "HikRobot", "CameraLink", "", -1, {}), std::invalid_argument);
+#else
+    // Built without the MVS SDK: HikRobot is refused as such, whatever the arguments.
+    try
+    {
+        RemoteCamera cam(kWorker, "HikRobot", "", "", -1, {});
+        FAIL("a HikRobot camera was opened in a build without the MVS SDK");
+    }
+    catch (const std::runtime_error& e)
+    {
+        CHECK(std::string(e.what()).find("built without the MVS SDK") != std::string::npos);
+    }
+#endif
     CHECK_THROWS_AS(RemoteCamera("/nonexistent/uc2_cam_worker", "Simulated", "", "", -1, {}),
                     std::runtime_error);
 }

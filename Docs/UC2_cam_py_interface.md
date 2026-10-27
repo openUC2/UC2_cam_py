@@ -364,6 +364,12 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 ## 8. Vendors
 
 ### HikRobot (`HikRobotCamera`, MVS SDK)
+- **Availability.** Needs a build with the MVS SDK (`External/hik/MVS`, see the README). Without
+  it the package still works, with the simulated camera only:
+  - importing `uc2_cam_py` logs one ERROR that says so and how to add the SDK,
+  - `vendors()` and `list_cameras()` leave HikRobot out, `list_devices()` is empty,
+  - `create_camera(vendor="HikRobot")` - also as the default vendor - raises `RuntimeError`
+    (and logs it); it does not fall back to the simulated camera.
 - **Firmware nodes and units:**
   - `ExposureTime` in µs, converted to ms,
   - `Gain` in dB,
@@ -412,7 +418,7 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 | `python -m uc2_cam_py` | Interactive: lists the cameras (index, name, vendor, connection, serial), opens the one whose index is typed with `debug_window=True` and `store_image_data=False`, and runs until Enter, Ctrl+C or the window is closed. |
 | `uc2_cam_py.run_connection_test(index=-1, frames=0, snapshot="")` | Quick diagnostic of a HikRobot camera (grab, snapshot; no window — without `snapshot` the first image goes to `snapshot.png`). |
 | `uc2_cam_py.defaults` | Default values (vendor, buffer size, warning threshold, recording path); to be overridden by `config.yaml` later. |
-| `uc2_cam_py.vendors()` | Available vendor names. |
+| `uc2_cam_py.vendors()` | Available vendor names. A vendor this build cannot drive is left out: without the MVS SDK, `"HikRobot"`. |
 
 `uc2_cam_py._hik` is the compiled low-level module and is not part of this interface.
 

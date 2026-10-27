@@ -23,14 +23,18 @@
 #include <vector>
 
 #include "CameraBase.h"
-#include "CaptureApp.h"
-#include "HikCamera.h"
+#include "DeviceSummary.h"
 #include "ImageWindow.h"
-#include "MvsCamera.h"
 #include "RemoteCamera.h"
 #include "SimCamera.h"
 #include "UC2Version.h"
 #include "hikLog.h"
+
+#if HIK_HAVE_MVS
+#include "CaptureApp.h"
+#include "HikCamera.h"
+#include "MvsCamera.h"
+#endif
 
 namespace py = pybind11;
 
@@ -335,17 +339,21 @@ PYBIND11_MODULE(_hik, m)
     m.doc() = "Low-level bindings of the uc2_cam_py camera core (use uc2_cam_py.create_camera).";
     m.attr("__version__") = hik::version();   // from the file VERSION, compiled in
 
+    // Without the MVS SDK the package offers only the simulated camera: the
+    // HikRobot functions below then report that instead of failing to load.
+    m.attr("HAVE_MVS") = static_cast<bool>(HIK_HAVE_MVS);
+
     // --- Devices -------------------------------------------------------------
-    py::class_<hik::DeviceInfo>(m, "DeviceInfo",
+    py::class_<hik::DeviceSummary>(m, "DeviceInfo",
         "Description of one enumerated HikRobot camera (read-only).")
-        .def_readonly("transport", &hik::DeviceInfo::transport,
+        .def_readonly("transport", &hik::DeviceSummary::transport,
                       "str: Transport layer, 'GigE' or 'USB3'.")
-        .def_readonly("model_name", &hik::DeviceInfo::modelName, "str: Camera model name.")
-        .def_readonly("serial", &hik::DeviceInfo::serial, "str: Serial number.")
-        .def_readonly("user_name", &hik::DeviceInfo::userName,
+        .def_readonly("model_name", &hik::DeviceSummary::modelName, "str: Camera model name.")
+        .def_readonly("serial", &hik::DeviceSummary::serial, "str: Serial number.")
+        .def_readonly("user_name", &hik::DeviceSummary::userName,
                       "str: User-defined name (may be empty).")
-        .def_readonly("ip", &hik::DeviceInfo::ip, "str: Current IP (GigE only, else empty).")
-        .def("__repr__", [](const hik::DeviceInfo& d) {
+        .def_readonly("ip", &hik::DeviceSummary::ip, "str: Current IP (GigE only, else empty).")
+        .def("__repr__", [](const hik::DeviceSummary& d) {
             std::string r = "<DeviceInfo " + d.transport + " " + d.modelName + " SN=" + d.serial;
             if (!d.ip.empty())
             {
@@ -356,23 +364,23 @@ PYBIND11_MODULE(_hik, m)
 
     m.def("list_devices",
           [](const std::string& connection_type) {
+              std::vector<hik::DeviceSummary> out;
+#if HIK_HAVE_MVS
               std::vector<hik::DeviceInfo> all;
               {
                   py::gil_scoped_release release;
                   all = hik::listDevices();
               }
-              if (connection_type.empty())
-              {
-                  return all;
-              }
-              std::vector<hik::DeviceInfo> out;
               for (const hik::DeviceInfo& d : all)
               {
-                  if (d.transport == connection_type)
+                  if (connection_type.empty() || d.transport == connection_type)
                   {
-                      out.push_back(d);
+                      out.push_back(d);   // the description, without the SDK's descriptor
                   }
               }
+#else
+              (void)connection_type;
+#endif
               return out;
           },
           py::arg("connection_type") = std::string(),
@@ -380,19 +388,40 @@ PYBIND11_MODULE(_hik, m)
           "Args:\n"
           "    connection_type (str): 'USB3', 'GigE' or '' for both (default).\n\n"
           "Returns:\n"
-          "    list[DeviceInfo]: One entry per camera, in enumeration order.");
+          "    list[DeviceInfo]: One entry per camera, in enumeration order. Always empty\n"
+          "    in a build without the MVS SDK.");
 
-    m.def("initialize", &hik::MvsCamera::initSdk,
+    m.def("initialize",
+          []() {
+#if HIK_HAVE_MVS
+              return hik::MvsCamera::initSdk();
+#else
+              return false;
+#endif
+          },
           "Initialise the MVS SDK (done automatically on import).\n\n"
           "Returns:\n"
-          "    bool: True on success.");
-    m.def("finalize", &hik::MvsCamera::finalizeSdk,
+          "    bool: True on success; always False without the MVS SDK.");
+    m.def("finalize",
+          []() {
+#if HIK_HAVE_MVS
+              hik::MvsCamera::finalizeSdk();
+#endif
+          },
           "Release the explicit SDK reference taken by initialize().");
-    m.def("sdk_path", &hik::MvsCamera::sdkPath,
-          "str: Root of the MVS SDK this process loaded (diagnostics).");
+    m.def("sdk_path",
+          []() {
+#if HIK_HAVE_MVS
+              return hik::MvsCamera::sdkPath();
+#else
+              return std::string();
+#endif
+          },
+          "str: Root of the MVS SDK this process loaded (diagnostics); '' without it.");
 
     m.def("run_connection_test",
-          [](int index, long frames, const std::string& snapshot, bool display) {
+          [](int index, long frames, const std::string& snapshot, bool display) -> int {
+#if HIK_HAVE_MVS
               hik::CaptureOptions opts;
               opts.index    = index;
               opts.frames   = frames;
@@ -400,6 +429,11 @@ PYBIND11_MODULE(_hik, m)
               opts.display  = display;
               py::gil_scoped_release release;
               return hik::runCapture(opts);
+#else
+              (void)index; (void)frames; (void)snapshot; (void)display;
+              throw std::runtime_error(
+                  "HikRobot cameras are not available: uc2_cam_py was built without the MVS SDK");
+#endif
           },
           py::arg("index") = -1, py::arg("frames") = 0, py::arg("snapshot") = std::string(),
           py::arg("display") = true,
@@ -530,12 +564,14 @@ PYBIND11_MODULE(_hik, m)
         "Vendor-neutral camera core (abstract). Units: ms, fps, dB, unbinned sensor pixels.");
     bindCameraApi(cameraBase);
 
+#if HIK_HAVE_MVS
     py::class_<hik::HikCamera, hik::CameraBase, std::shared_ptr<hik::HikCamera>>(m, "HikCamera",
         "HikRobot (MVS) camera. Raises ValueError (connection type), IndexError (index)\n"
-        "or RuntimeError (no such camera / cannot open).")
+        "or RuntimeError (no such camera / cannot open). Missing without the MVS SDK.")
         .def(py::init<const std::string&, const std::string&, int>(),
              py::arg("connection_type") = std::string(), py::arg("serial") = std::string(),
              py::arg("index") = -1, py::call_guard<py::gil_scoped_release>());
+#endif
 
     py::class_<hik::SimCamera, hik::CameraBase, std::shared_ptr<hik::SimCamera>>(m, "SimCamera",
         "Simulated camera producing a walking Gaussian spot (for tests without hardware).")

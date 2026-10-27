@@ -12,6 +12,10 @@ import numpy as np
 #: Version of the compiled C++ core (the file VERSION), e.g. "1.0.0".
 __version__: str
 
+#: True if the module was built with the HikRobot MVS SDK. Without it there is no
+#: `HikCamera`, `list_devices()` is empty and only the simulated camera works.
+HAVE_MVS: bool
+
 # --- Devices -----------------------------------------------------------------
 
 class DeviceInfo:
@@ -155,7 +159,7 @@ class CameraBase(_CameraApi):
     """Vendor-neutral camera core. Units: ms, fps, dB, unbinned sensor pixels."""
 
 class HikCamera(CameraBase):
-    """HikRobot (MVS) camera."""
+    """HikRobot (MVS) camera. Missing in a build without the MVS SDK (``HAVE_MVS`` False)."""
 
     def __init__(self, connection_type: str = "", serial: str = "", index: int = -1) -> None: ...
 

@@ -13,6 +13,14 @@ from .camera import Camera, CameraInfo, register_vendor
 #:     MODELS["MV-CA023-10UM"] = {"pixel_pitch_um": (5.86, 5.86)}
 MODELS: dict[str, dict[str, Any]] = {}
 
+#: Logged on import and raised by create_camera in a build without the MVS SDK.
+NO_MVS_MESSAGE = (
+    "HikRobot cameras are not available: uc2_cam_py was built without the MVS SDK, "
+    "so only the 'Simulated' camera can be used. To add HikRobot support, put the MVS "
+    "packages into External/hik, run `uv run fetch_mvs` and reinstall uc2_cam_py "
+    "(see External/hik/README.md)."
+)
+
 
 @register_vendor
 class HikRobotCamera(Camera):
@@ -34,6 +42,9 @@ class HikRobotCamera(Camera):
         separate_process: bool,
         **options: Any,
     ) -> Any:
+        reason = cls._unavailable()
+        if reason is not None:
+            raise RuntimeError(reason)
         if options:
             raise TypeError(f"unexpected options for {cls.VENDOR}: {', '.join(sorted(options))}")
         if separate_process:
@@ -42,10 +53,16 @@ class HikRobotCamera(Camera):
 
     @classmethod
     def _discover(cls) -> list[CameraInfo]:
+        if cls._unavailable() is not None:
+            return []
         return [
             CameraInfo(vendor=cls.VENDOR, model=d.model_name, serial=d.serial, connection_type=d.transport)
             for d in _hik.list_devices()
         ]
+
+    @classmethod
+    def _unavailable(cls) -> str | None:
+        return None if _hik.HAVE_MVS else NO_MVS_MESSAGE
 
     def _model_info(self) -> dict[str, Any] | None:
         return MODELS.get(self.model)

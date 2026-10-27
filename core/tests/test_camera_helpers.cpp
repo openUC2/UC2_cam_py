@@ -4,14 +4,18 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "CameraBase.h"
-#include "PixelType.h"
 #include "SimPattern.h"
 #include "test_image_helpers.h"
 
 #include <vector>
 
+#if HIK_HAVE_MVS
+#include "PixelType.h"
+#endif
+
 using hik::PixelDepth;
 
+#if HIK_HAVE_MVS   // these four use the SDK's PixelType_Gvsp_* codes (PixelType.h)
 TEST_CASE("PFNC constants match the MVS SDK pixel types", "[camera][pixel]")
 {
     CHECK(hik::pfnc::Mono8 == PixelType_Gvsp_Mono8);
@@ -86,6 +90,7 @@ TEST_CASE("unpackedAlternatives offers the matching unpacked format", "[camera][
         CHECK(hik::pixelLayout(alt).supported);
     }
 }
+#endif
 
 TEST_CASE("nearestOnGrid snaps to the closest grid point inside the range", "[camera]")
 {
