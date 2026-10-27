@@ -13,13 +13,21 @@ from .camera import Camera, CameraInfo, register_vendor
 #:     MODELS["MV-CA023-10UM"] = {"pixel_pitch_um": (5.86, 5.86)}
 MODELS: dict[str, dict[str, Any]] = {}
 
-#: Logged on import and raised by create_camera in a build without the MVS SDK.
-NO_MVS_MESSAGE = (
-    "HikRobot cameras are not available: uc2_cam_py was built without the MVS SDK, "
-    "so only the 'Simulated' camera can be used. To add HikRobot support, put the MVS "
-    "packages into External/hik, run `uv run fetch_mvs` and reinstall uc2_cam_py "
-    "(see External/hik/README.md)."
-)
+
+
+def no_mvs_message() -> str:
+    """Why there are no HikRobot cameras in a build without the MVS SDK, and how to add them.
+
+    Logged on import and raised by :func:`create_camera`. Names the reason the build found
+    (``_hik.MVS_MISSING_REASON``), e.g. a missing header or an SDK that does not fit.
+    """
+    reason = _hik.MVS_MISSING_REASON or "reason unknown"
+    return (
+        f"HikRobot cameras are not available: uc2_cam_py was built without the MVS SDK ({reason}), "
+        "so only the 'Simulated' camera can be used. To add HikRobot support, put the MVS packages "
+        "into External/hik and run `uv run fetch_mvs`, or point the CMake variable MVS_ROOT at a "
+        "complete SDK, then reinstall uc2_cam_py (see External/hik/README.md)."
+    )
 
 
 @register_vendor
@@ -62,7 +70,7 @@ class HikRobotCamera(Camera):
 
     @classmethod
     def _unavailable(cls) -> str | None:
-        return None if _hik.HAVE_MVS else NO_MVS_MESSAGE
+        return None if _hik.HAVE_MVS else no_mvs_message()
 
     def _model_info(self) -> dict[str, Any] | None:
         return MODELS.get(self.model)

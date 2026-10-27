@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 1.0.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 1.0.1). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.

@@ -4,9 +4,10 @@ uc2_cam_py builds and runs against the MVS SDK in `External/hik/MVS/`, not again
 installation in `/opt/MVS`. The SDK is proprietary, so neither the packages nor the extracted
 files are committed (see `.gitignore`).
 
-The SDK is optional: without `MVS/` the project still builds (CMake warns), but without
-HikRobot support - only the simulated camera is available, and importing `uc2_cam_py` logs an
-ERROR saying so. Setting the SDK up later and building again (reinstalling the Python
+The SDK is optional: without `MVS/` - or with an SDK that does not fit, also one given by
+`-DMVS_ROOT` - the project still builds (CMake warns), but without HikRobot support: only the
+simulated camera is available, and importing `uc2_cam_py` logs an ERROR saying so and why.
+`-DHIK_MVS=ON` turns a missing or unfit SDK into a build error instead. Setting the SDK up later and building again (reinstalling the Python
 package) adds HikRobot support; a CMake build tree notices the new `MVS/` and re-configures
 by itself.
 

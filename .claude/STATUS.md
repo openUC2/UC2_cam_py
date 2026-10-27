@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-27 · Branch `main` · Basis-Commit `4b91fdd` (Merge PR #1; Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Das Paket baut auch ohne MVS-SDK, dann nur mit „Simulated“
-(oberster Eintrag). Davor: Versionierung (1.0.0), Flush-Fehler, Rauschen im simulierten Bild,
-jede Kamera in einem eigenen Prozess.
+**Stand:** 2026-10-27 · Branch `main` · Basis-Commit `e6ca7ad` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Version 1.0.1 (oberster Eintrag). Davor: Ein unbrauchbares
+`MVS_ROOT` führt zum Build ohne HikRobot statt zum Abbruch, mit SDK-Prüfung beim Konfigurieren. Davor: Build ohne MVS-SDK,
+Versionierung (1.0.0, Tag `v1.0.0` auf `4b91fdd`), Flush-Fehler, Rauschen im simulierten Bild.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,87 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Build ohne MVS-SDK: dann nur „Simulated“, mit ERROR beim Import — 2026-10-27
+### Version 1.0.0 → 1.0.1 — 2026-10-27
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27.
+- **Inhalt von 1.0.1:**
+  - Build ohne MVS-SDK (`e6ca7ad`)
+  - unbrauchbares `MVS_ROOT` → Build ohne HikRobot (Eintrag darunter, mit diesem Eintrag
+    zusammen committen)
+- **PATCH, nicht MINOR:** Ein Build, der vorher abbrach, gelingt jetzt. Die öffentliche
+  Schnittstelle bleibt unverändert, neu sind nur interne `_hik`-Attribute. Im CHANGELOG stehen
+  die Einträge deshalb unter „Fixed“.
+- **Geändert:**
+  - `VERSION` → `1.0.1`
+  - `CHANGELOG.md`: „Unreleased“ → `[1.0.1] - 2026-10-27`; „Unreleased“ ist jetzt leer
+  - Kopfzeile von `Docs/UC2_cam_py_interface.md`
+  - Beispielwerte „1.0.0“ und die Hinweise „vor 1.0.0“ sind bewusst unverändert.
+- **Verifikation:**
+  - `__version__`, `_hik.__version__`, Metadaten und `uc2_cam_worker --version` melden 1.0.1.
+  - `uv run all_tests`: CMake konfigurierte von selbst neu; C++ 138/138, Python 187 passed /
+    22 skipped.
+  - Das Wheel heißt `uc2_cam_py-1.0.1-cp312-…`.
+- **Offen:** Tag `v1.0.1` nach dem Commit des Nutzers auf `main` (setze ich, Push durch den
+  Nutzer).
+
+### Unbrauchbares `MVS_ROOT` → ohne HikRobot bauen; SDK-Prüfung beim Konfigurieren — 2026-10-27
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27.
+  - Anlass: Ein äußeres Paket setzt `MVS_ROOT` per `config-settings-package`, und der Build
+    scheitert.
+  - Nachgestellt: Ein gesetztes `MVS_ROOT` ohne SDK ergab FATAL_ERROR (Regel aus dem Eintrag
+    darunter). Gegen das vollständige `/opt/MVS` hier baute es fehlerfrei.
+  - Vom Nutzer entschieden: Fehlende **und** unpassende SDKs werden abgefangen.
+- **CMake (`core/CMakeLists.txt`):**
+  - Ein gesetztes `MVS_ROOT` ist keine Pflicht mehr, nur noch `HIK_MVS=ON`.
+  - Die WARNING nennt die Quelle und gibt einen passenden Hinweis.
+  - `HIK_MVS_MISSING_REASON` (CACHE INTERNAL, einzeilig, `"`, `\` und `;` ersetzt, ≤ 400 Zeichen)
+    geht als Definition an `_hik`.
+- **Neu `core/cmake/MvsProbe.cmake`, `hik_mvs_probe()`:** zwei `try_compile`-Proben im Unterordner
+  `mvs_probe` des Build-Baums.
+  1. Die vier SDK-Quellen werden als STATIC_LIBRARY übersetzt.
+  2. Ein Mini-Programm (`MV_CC_Initialize`/`GetSDKVersion`) wird gegen die Bibliothek gelinkt,
+     mit `-rpath`.
+  - Grund im Fehlerfall: die erste Zeile mit `error:`/`Fehler:`/`undefined reference`/….
+  - Gecacht über eine SHA1-Signatur (SDK-Pfad, Zeitstempel von Header und Bibliothek, Compiler
+    und Flags, SHA1 der Quellen, Header und von `MvsProbe.cmake` selbst). Unverändert kostet das
+    0,3 s pro Configure ohne Prüfung; nach einer Änderung ~0,5 s (ccache).
+- **Python:**
+  - `_hik.MVS_MISSING_REASON` (mit SDK `""`).
+  - `hikrobot.no_mvs_message()` ersetzt die Konstante `NO_MVS_MESSAGE`. Es nennt den Grund und
+    als Abhilfe auch `MVS_ROOT`.
+- **Tests:** Der Monkeypatch-Test prüft den Grund in Exception und Log; der Test ohne SDK prüft
+  den Grund auf stderr; neu ist `test_a_build_with_the_sdk_has_no_missing_reason`.
+- **Verifikation:**
+  - Zwei künstliche SDKs:
+    - `build/fake-mvs-oldheader` (nur `MV_CC_GetSDKVersion`): WARNING, Grund „fatal error:
+      MvErrorDefine.h: …nicht gefunden“, Build und 119/119; mit `HIK_MVS=ON` FATAL_ERROR.
+    - `build/fake-mvs-badlib` (echte Header, Stub-Bibliothek): WARNING, „undefined reference
+      to `MV_CC_Initialize`“.
+  - Wheels mit `-C cmake.define.MVS_ROOT=`:
+    - `/opt/MVS`: mit SDK, 33 Dateien unter `_mvs/`.
+    - `/nonexistent/MVS` und das unpassende SDK: gebaut, ohne `_mvs/`; der Import-ERROR nennt
+      den Grund.
+  - pytest gegen das Wheel mit unpassendem SDK: 181 passed / 25 skipped.
+  - Mit SDK: `uv run all_tests` → C++ 138/138, Python 187 passed / 22 skipped; `build/core`
+    134/134; `build/core-nomvs` 119/119; TSan und ASan 138/138; ruff sauber, Pyright 0 Fehler.
+  - Den frischen Checkout (`build/fresh-checkout`) habe ich nicht neu gebaut. Sein Pfad
+    „bundle fehlt“ ist derselbe wie beim fehlenden `MVS_ROOT`.
+- **Doku:** README „Requirements“ (Prüfung, `HIK_MVS`, Beispiel `config-settings-package`),
+  `External/hik/README.md`, CHANGELOG „Unreleased“.
+- **Wegwerf-Verzeichnisse unter `build/`:** `fake-mvs-oldheader`, `fake-mvs-badlib`,
+  `probe-*`, `probe-wheel-*`.
+
+### Build ohne MVS-SDK: dann nur „Simulated“, mit ERROR beim Import — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`e6ca7ad`)
+
+- **Überholt** durch den Eintrag darüber: Ein ausdrücklich gesetztes `-DMVS_ROOT` ist **keine**
+  Pflicht mehr.
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md` (überschreibt den Versionierungsplan),
   freigegeben 2026-10-27.
@@ -137,10 +215,8 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 - **Hinweis TSan:** Wer die Testbinary direkt unter TSan startet, braucht `TSAN_OPTIONS` mit
   `tools/sanitizers/tsan.supp` wie im Preset. Sonst meldet der absichtlich „reißende“
   Seqlock-Test `test_ringbuffer_mt.cpp` Races.
-- **Tag:** `v1.0.0` existiert (vom Nutzer, auch auf origin), zeigt aber auf `1be0de2`, den Stand
-  vor Kamera-Prozess und Versionierung. Richtig wäre `4b91fdd`. Versetzen nur durch den Nutzer
-  (`git tag -f`/`push` gesperrt): `git tag -f -a v1.0.0 4b91fdd -m "uc2_cam_py 1.0.0"`, dann
-  `git push --force origin v1.0.0`.
+- **Tag:** `v1.0.0` zeigt auf `4b91fdd` (Merge in `main`, `VERSION` = 1.0.0). Der Nutzer hat
+  ihn von `1be0de2` dorthin versetzt.
 
 ### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
 

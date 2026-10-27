@@ -36,6 +36,10 @@
 #include "MvsCamera.h"
 #endif
 
+#ifndef HIK_MVS_MISSING_REASON   // set by CMakeLists.txt from core/CMakeLists.txt
+#define HIK_MVS_MISSING_REASON ""
+#endif
+
 namespace py = pybind11;
 
 namespace {
@@ -342,6 +346,7 @@ PYBIND11_MODULE(_hik, m)
     // Without the MVS SDK the package offers only the simulated camera: the
     // HikRobot functions below then report that instead of failing to load.
     m.attr("HAVE_MVS") = static_cast<bool>(HIK_HAVE_MVS);
+    m.attr("MVS_MISSING_REASON") = std::string(HIK_MVS_MISSING_REASON);   // "" with the SDK
 
     // --- Devices -------------------------------------------------------------
     py::class_<hik::DeviceSummary>(m, "DeviceInfo",

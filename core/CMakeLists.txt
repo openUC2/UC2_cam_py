@@ -29,15 +29,18 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/HikTooling.cmake")
 # MVCAM_SDK_PATH variable an MVS installer exports are deliberately not used:
 # only -DMVS_ROOT=/path overrides the bundle, e.g. to try another SDK version.
 #
-#   HIK_MVS  AUTO  use the SDK if it is there, else build without it (default)
-#            ON    the SDK is required (as is an explicit -DMVS_ROOT)
+#   HIK_MVS  AUTO  use the SDK if it is there and fits, else build without it
+#                  (default; also when -DMVS_ROOT points somewhere unusable)
+#            ON    the SDK is required: missing or unfit is an error
 #            OFF   build without it, do not even look
 #
-# Without the SDK there is no HikRobot support: the Python package then offers
-# only the simulated camera and logs an error saying so. HIK_HAVE_MVS (ON/OFF)
-# is the result; the code sees it as HIK_HAVE_MVS=1/0.
+# "Fits" means the SDK users compile and the library links against it
+# (cmake/MvsProbe.cmake). Without the SDK there is no HikRobot support: the
+# Python package then offers only the simulated camera and logs an error
+# naming HIK_MVS_MISSING_REASON. HIK_HAVE_MVS (ON/OFF) is the result; the code
+# sees it as HIK_HAVE_MVS=1/0.
 # ---------------------------------------------------------------------------
-set(HIK_MVS "AUTO" CACHE STRING "HikRobot MVS SDK: AUTO (use it if found), ON (required) or OFF (without)")
+set(HIK_MVS "AUTO" CACHE STRING "HikRobot MVS SDK: AUTO (use it if found and fitting), ON (required) or OFF (without)")
 set_property(CACHE HIK_MVS PROPERTY STRINGS AUTO ON OFF)
 string(TOUPPER "${HIK_MVS}" _hik_mvs_mode)
 if(NOT _hik_mvs_mode MATCHES "^(AUTO|ON|OFF)$")
@@ -52,24 +55,25 @@ if(IS_DIRECTORY "${_hik_external}")
 endif()
 
 set(HIK_HAVE_MVS OFF)
+set(_mvs_missing "")
 if(_hik_mvs_mode STREQUAL "OFF")
+    set(_mvs_missing "HIK_MVS=OFF")
     message(STATUS "HIK_MVS=OFF: building without HikRobot support (only the simulated camera)")
 else()
     get_filename_component(MVS_BUNDLE_ROOT "${_hik_external}/MVS" ABSOLUTE)
     if(MVS_ROOT)
-        set(_mvs_source "-DMVS_ROOT")
-        set(_mvs_required ON)        # asked for a specific SDK: not finding it is an error
+        set(_mvs_source "-DMVS_ROOT=${MVS_ROOT}")
+        set(_mvs_hint
+            "Point MVS_ROOT at a complete SDK that fits this code (include/, lib/<arch>/), or leave "
+            "it unset to use External/hik/MVS (`uv run fetch_mvs`, see External/hik/README.md).")
     else()
         set(MVS_ROOT "${MVS_BUNDLE_ROOT}")
         set(_mvs_source "bundled")
-        if(_hik_mvs_mode STREQUAL "ON")
-            set(_mvs_required ON)
-        else()
-            set(_mvs_required OFF)
-        endif()
+        set(_mvs_hint
+            "Put the HikRobot Linux packages into External/hik and run `uv run fetch_mvs` "
+            "(see External/hik/README.md), or point -DMVS_ROOT at an SDK tree (include/, lib/<arch>/).")
     endif()
 
-    set(_mvs_missing "")
     set(MVS_INCLUDE_DIR "${MVS_ROOT}/include")
     # Library subdirectory by processor: the bundle holds x86_64 (lib/64) and
     # aarch64 (lib/aarch64) side by side, so the pointer size alone cannot decide.
@@ -95,15 +99,20 @@ else()
         endif()
     endif()
 
+    if(NOT _mvs_missing)
+        include("${CMAKE_CURRENT_LIST_DIR}/cmake/MvsProbe.cmake")
+        hik_mvs_probe(_mvs_probe_error)
+        if(_mvs_probe_error)
+            set(_mvs_missing "the SDK in ${MVS_ROOT} does not fit this code: ${_mvs_probe_error}")
+        endif()
+    endif()
+
     if(_mvs_missing)
-        set(_mvs_hint
-            "Put the HikRobot Linux packages into External/hik and run `uv run fetch_mvs` "
-            "(see External/hik/README.md), or point -DMVS_ROOT at an SDK tree (include/, lib/<arch>/).")
-        if(_mvs_required)
-            message(FATAL_ERROR "MVS SDK not found: ${_mvs_missing}.\n" ${_mvs_hint})
+        if(_hik_mvs_mode STREQUAL "ON")
+            message(FATAL_ERROR "MVS SDK (${_mvs_source}) not usable: ${_mvs_missing}.\n" ${_mvs_hint})
         endif()
         message(WARNING
-            "MVS SDK not found: ${_mvs_missing}.\n"
+            "MVS SDK (${_mvs_source}) not usable: ${_mvs_missing}.\n"
             "Building WITHOUT HikRobot support - only the simulated camera will be available.\n"
             ${_mvs_hint} " Then build again (re-install the Python package).")
     else()
@@ -131,6 +140,19 @@ else()
     set(HIKCAMTEST_MVS_ARCH_DIR "" CACHE INTERNAL "MVS library sub-directory (64 | aarch64)")
 endif()
 set(HIK_HAVE_MVS ${HIK_HAVE_MVS} CACHE INTERNAL "Built with the HikRobot MVS SDK")
+
+# Why there is no SDK, for the error the Python package logs on import: one
+# line, without the characters a C string literal or a CMake list would trip on.
+string(REPLACE "\n" " " _mvs_reason "${_mvs_missing}")
+string(REPLACE "\\" "/" _mvs_reason "${_mvs_reason}")
+string(REPLACE "\"" "'" _mvs_reason "${_mvs_reason}")
+string(REPLACE ";" "," _mvs_reason "${_mvs_reason}")
+string(LENGTH "${_mvs_reason}" _mvs_reason_len)
+if(_mvs_reason_len GREATER 400)
+    string(SUBSTRING "${_mvs_reason}" 0 400 _mvs_reason)
+    string(APPEND _mvs_reason "...")
+endif()
+set(HIK_MVS_MISSING_REASON "${_mvs_reason}" CACHE INTERNAL "Why the build has no MVS SDK (empty: it has one)")
 
 # ---------------------------------------------------------------------------
 # Optional X11 support for the live preview window.

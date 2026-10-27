@@ -61,6 +61,8 @@ def test_a_build_without_the_sdk_says_so_and_offers_only_the_simulated_camera() 
     out = subprocess.run([sys.executable, "-c", "import uc2_cam_py"], capture_output=True, text=True,
                          check=True, timeout=60)
     assert "HikRobot cameras are not available" in out.stderr     # logging.lastResort -> stderr
+    assert uc2_cam_py._hik.MVS_MISSING_REASON                     # why the build has no SDK ...
+    assert uc2_cam_py._hik.MVS_MISSING_REASON in out.stderr       # ... is part of the message
     assert "uv run fetch_mvs" in out.stderr                       # and how to add them
     assert uc2_cam_py.vendors() == ["Simulated"]
     assert uc2_cam_py.list_devices() == []
@@ -74,6 +76,11 @@ def test_list_devices_returns_list() -> None:
     """list_devices() always returns a list (empty when no camera is present)."""
     devices = uc2_cam_py.list_devices()
     assert isinstance(devices, list)
+
+
+@needs_mvs
+def test_a_build_with_the_sdk_has_no_missing_reason() -> None:
+    assert uc2_cam_py._hik.MVS_MISSING_REASON == ""
 
 
 @needs_mvs

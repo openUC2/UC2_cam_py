@@ -138,11 +138,23 @@ sequenceDiagram
   (`MVS-<version>_Linux_<arch>_<date>.zip`, x86_64 and/or aarch64) into `External/hik/`
   and run `uv run fetch_mvs` once; see [External/hik/README.md](External/hik/README.md).
   **Without it** everything still builds - CMake warns - but without HikRobot support: only
-  the `"Simulated"` camera is available, importing `uc2_cam_py` logs an ERROR saying so,
-  `vendors()` lists only `"Simulated"`, and `create_camera(vendor="HikRobot")` (the default
-  vendor) raises `RuntimeError`. After `fetch_mvs`, build again / reinstall the package.
-  The CMake switch `HIK_MVS` decides: `AUTO` (default: use the SDK if it is there), `ON`
-  (required, as is an explicit `-DMVS_ROOT`), `OFF` (build without it).
+  the `"Simulated"` camera is available, importing `uc2_cam_py` logs an ERROR saying so and
+  why, `vendors()` lists only `"Simulated"`, and `create_camera(vendor="HikRobot")` (the
+  default vendor) raises `RuntimeError`. After `fetch_mvs`, build again / reinstall the package.
+  The same holds for an SDK that is there but does not fit: CMake compiles the code that uses
+  the SDK and links against its library once at configure time (`core/cmake/MvsProbe.cmake`,
+  cached until SDK or code change). The CMake switch `HIK_MVS` decides: `AUTO` (default: use
+  the SDK if it is there and fits), `ON` (required: missing or unfit is an error), `OFF`
+  (build without it).
+- **Another SDK, e.g. from a package that depends on uc2_cam_py:** `MVS_ROOT` points the build
+  at it instead of `External/hik/MVS`. If it is missing or does not fit, the build still
+  succeeds without HikRobot support, and the import ERROR names the reason:
+
+  ```toml
+  # pyproject.toml of the depending package (uv)
+  [tool.uv]
+  config-settings-package = { uc2-cam-py = { "cmake.define.MVS_ROOT" = "/opt/MVS" } }
+  ```
   The SDK is proprietary and therefore not in git. CMake uses only this copy (an
   `/opt/MVS` installation is ignored; `-DMVS_ROOT=/path` overrides it deliberately), and the
   installed Python package carries the runtime libraries in `uc2_cam_py/_mvs/`.

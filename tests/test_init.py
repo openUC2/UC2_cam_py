@@ -108,13 +108,15 @@ def test_missing_hikrobot_camera_raises_and_logs(rec_logger, tmp_path) -> None:
 def test_without_the_mvs_sdk_only_the_simulated_camera_is_available(monkeypatch, rec_logger, open_camera) -> None:
     """A build without the MVS SDK (pretended here, so it runs in every build)."""
     monkeypatch.setattr(uc2_cam_py._hik, "HAVE_MVS", False)
+    monkeypatch.setattr(uc2_cam_py._hik, "MVS_MISSING_REASON", "/opt/MVS/include/MvCameraControl.h is missing")
     assert uc2_cam_py.vendors() == ["Simulated"]
     assert [c.vendor for c in uc2_cam_py.list_cameras()] == ["Simulated"]
     assert defaults.VENDOR == "HikRobot"
     for vendor in ("HikRobot", None):   # asked for by name, and as the default vendor: no fallback
         rec_logger.clear()
-        with pytest.raises(RuntimeError, match="built without the MVS SDK"):
+        with pytest.raises(RuntimeError, match="built without the MVS SDK") as err:
             uc2_cam_py.create_camera(vendor=vendor, store_image_data=False, logger=rec_logger)
+        assert "(/opt/MVS/include/MvCameraControl.h is missing)" in str(err.value)   # the build's reason
         assert rec_logger.has("ERROR", "Opening a HikRobot camera failed: HikRobot cameras are not available")
     assert open_camera("Simulated").VENDOR == "Simulated"
 

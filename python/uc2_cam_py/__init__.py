@@ -38,7 +38,7 @@ from .camera import (
     vendors,
 )
 from .data import ImgData, ImgMetaData
-from .hikrobot import NO_MVS_MESSAGE, HikRobotCamera
+from .hikrobot import HikRobotCamera, no_mvs_message
 from .simulated import SimulatedCamera
 
 #: Version of the package (SemVer, from the file VERSION). Taken from the compiled
@@ -106,7 +106,7 @@ _logging.start()
 if not _hik.HAVE_MVS:
     # Built without the MVS SDK: only the simulated camera. Without a configured
     # logging setup this ERROR still reaches stderr (logging.lastResort).
-    _logging.package_logger().error(NO_MVS_MESSAGE)
+    _logging.package_logger().error(no_mvs_message())
 elif not initialize():
     warnings.warn(
         "MVS SDK initialisation failed; HikRobot cameras will not work.",

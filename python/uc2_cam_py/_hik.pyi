@@ -16,6 +16,10 @@ __version__: str
 #: `HikCamera`, `list_devices()` is empty and only the simulated camera works.
 HAVE_MVS: bool
 
+#: Why the build has no MVS SDK, e.g. "/opt/MVS/include/MvCameraControl.h is missing"
+#: or "the SDK in /opt/MVS does not fit this code: ..."; "" if it has one.
+MVS_MISSING_REASON: str
+
 # --- Devices -----------------------------------------------------------------
 
 class DeviceInfo:

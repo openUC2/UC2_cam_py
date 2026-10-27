@@ -73,6 +73,8 @@ if (HIK_BUILD_PYTHON)
 
     pybind11_add_module(_hik bindings/hik_py.cpp)
     target_link_libraries(_hik PRIVATE hikcam_core)
+    # Why the build has no MVS SDK ("" if it has one): the package logs it on import.
+    target_compile_definitions(_hik PRIVATE "HIK_MVS_MISSING_REASON=\"${HIK_MVS_MISSING_REASON}\"")
 
     # rpath: the SDK of the build tree for the module in build/, the copy in the
     # package for the installed one, so neither needs LD_LIBRARY_PATH.
