@@ -43,6 +43,25 @@ LogLevel logLevel();
 /// Deliver @p message at @p level to the current sink.
 void logMessage(LogLevel level, const std::string& message);
 
+/// @return the source tag of the calling thread: 0 unless a ScopedLogSource is
+///         active on it. A sink reads it to tell which camera a message is about.
+int currentLogSource();
+
+/// Tag every message logged on this thread with @p source while the guard
+/// lives (nestable). RemoteCamera uses it so that the messages of a camera
+/// process reach the logger of that camera.
+class ScopedLogSource
+{
+public:
+    explicit ScopedLogSource(int source);
+    ~ScopedLogSource();
+    ScopedLogSource(const ScopedLogSource&)            = delete;
+    ScopedLogSource& operator=(const ScopedLogSource&) = delete;
+
+private:
+    int m_previous;
+};
+
 inline void ERR(const std::string& msg)  { logMessage(LogLevel::Error, msg); }
 inline void WARN(const std::string& msg) { logMessage(LogLevel::Warning, msg); }
 inline void INFO(const std::string& msg) { logMessage(LogLevel::Info, msg); }

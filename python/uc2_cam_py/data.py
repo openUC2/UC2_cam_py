@@ -94,6 +94,8 @@ class ImgMetaData:
         slot_stride: Payload stride between slots in bytes.
         camera_id: ``"<model>-<serial>"``.
         comment: JSON with the camera settings at the session start.
+        software_version: Version of uc2_cam_py that wrote the session (``""`` in
+            files written before 1.0.0).
     """
 
     magic: str
@@ -111,6 +113,7 @@ class ImgMetaData:
     slot_stride: int
     camera_id: str
     comment: str
+    software_version: str
 
     @property
     def dtype(self) -> str:

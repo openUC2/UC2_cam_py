@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
-project(HikCamCore LANGUAGES CXX)
+# UC2_CAM_VERSION from the file VERSION in the repository root (a no-op when
+# the top-level project already included it).
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/UC2Version.cmake")
+project(HikCamCore VERSION ${UC2_CAM_VERSION} LANGUAGES CXX)
 
 # When built stand-alone, pick sensible defaults. When added via the top-level
 # project (add_subdirectory) these are already set by the parent.
@@ -108,9 +111,17 @@ add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/CameraBase.cpp
     src/HikCamera.cpp
     src/SimCamera.cpp
-    src/SimPattern.cpp)
+    src/SimPattern.cpp
+    src/CamIpc.cpp
+    src/CamWorker.cpp
+    src/RemoteCamera.cpp
+    src/Version.cpp)
 
 set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Only this one file sees the version number, so a new version recompiles just it.
+set_source_files_properties(src/Version.cpp PROPERTIES
+    COMPILE_DEFINITIONS "UC2_CAM_VERSION=\"${UC2_CAM_VERSION}\"")
 
 # The include dirs and the MVS import lib are part of the public interface so
 # consumers (CLI, Python module) inherit them.
@@ -138,6 +149,18 @@ endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(${HIK_CAM_CORE_TARGET_NAME} PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
+# The camera process (one per camera, started by RemoteCamera). Built in both
+# configuration paths, so the C++ tests can start it; the top-level project
+# installs it next to the Python extension module.
+# ---------------------------------------------------------------------------
+add_executable(uc2_cam_worker worker/uc2_cam_worker.cpp)
+target_link_libraries(uc2_cam_worker PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
+set_target_properties(uc2_cam_worker PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(uc2_cam_worker PRIVATE -Wall -Wextra)
 endif()
 
 # ---------------------------------------------------------------------------

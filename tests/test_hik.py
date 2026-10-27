@@ -21,11 +21,32 @@ import uc2_cam_py
 
 
 def test_import_and_version() -> None:
-    """The package imports and exposes the expected public API."""
-    assert uc2_cam_py.__version__ == "0.2.0"
+    """The package imports and exposes the expected public API; one version everywhere."""
+    import importlib.metadata
+    import re
+    from pathlib import Path
+
+    from uc2_cam_py import _hik
+
+    version = (Path(__file__).parents[1] / "VERSION").read_text().strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)              # SemVer MAJOR.MINOR.PATCH
+    assert uc2_cam_py.__version__ == version
+    assert _hik.__version__ == version                            # compiled into the C++ core
+    assert importlib.metadata.version("uc2_cam_py") == version    # package metadata
     assert callable(uc2_cam_py.list_devices)
     assert callable(uc2_cam_py.run_connection_test)
     assert uc2_cam_py.__file__  # loaded from an installed location
+
+
+def test_the_camera_process_reports_the_same_version() -> None:
+    """``uc2_cam_worker --version`` names the version of the package it was installed with."""
+    import subprocess
+
+    from uc2_cam_py import _process
+
+    out = subprocess.run([_process.worker_path(), "--version"], capture_output=True, text=True,
+                         check=True, timeout=10)
+    assert out.stdout.strip() == f"uc2_cam_worker {uc2_cam_py.__version__}"
 
 
 def test_list_devices_returns_list() -> None:
@@ -50,6 +71,26 @@ def test_the_sdk_comes_from_the_package_not_from_an_installation() -> None:
     assert not [f for f in files if f.startswith("/opt/MVS")]
     assert any(f.startswith(str(root)) for f in files)
     assert os.environ["ALLUSERSPROFILE"].endswith("uc2_cam_py")    # GenICam cache not in /opt/MVS
+
+
+def test_the_camera_process_loads_the_sdk_of_the_package_too(tmp_path) -> None:
+    """The camera process (separate_process=True) uses the same SDK copy, never /opt/MVS."""
+    from pathlib import Path
+
+    from uc2_cam_py import _hik
+
+    root = Path(_hik.sdk_path())
+    with uc2_cam_py.create_camera(
+        vendor="Simulated", store_image_data=False, image_file_path=tmp_path, sensor_width=400, sensor_height=200
+    ) as cam:
+        assert cam.process_id is not None
+        with open(f"/proc/{cam.process_id}/maps") as maps:
+            files = {line.split()[-1] for line in maps if "/" in line}
+        with open(f"/proc/{cam.process_id}/environ", "rb") as env:
+            environ = env.read().split(b"\0")
+    assert not [f for f in files if f.startswith("/opt/MVS")]
+    assert any(f.startswith(str(root)) for f in files)
+    assert any(e.startswith(b"ALLUSERSPROFILE=") and e.endswith(b"uc2_cam_py") for e in environ)
 
 
 @pytest.mark.hardware

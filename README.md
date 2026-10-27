@@ -12,8 +12,13 @@ buffer, recording to disk and zero-copy image access.
 - **Vendors:** HikRobot cameras (GigE Vision and USB3 Vision, via the MVS SDK that ships
   with the project in `External/hik/MVS`) and a **simulated camera** for development and
   tests without hardware.
+- **One process per camera** (default): each camera runs in a process of its own
+  (`uc2_cam_worker`), so several cameras spread over the CPU cores by themselves and a
+  crashing camera SDK cannot take your application down. Images are still read zero-copy,
+  from shared memory.
 - **C++ core** (`hikcam_core`): ring buffer
-  ([Docs/RingBuff_REF.md](Docs/RingBuff_REF.md)), camera abstraction, logging.
+  ([Docs/RingBuff_REF.md](Docs/RingBuff_REF.md)), camera abstraction, camera process and its
+  protocol, logging.
 - **Tools:** a terminal capture tool (`HikStandAlone`), a ring-buffer example,
   profiling and sanitizer setups ([Docs/Tooling.md](Docs/Tooling.md)).
 
@@ -27,12 +32,17 @@ UC2_cam_py/
 │   │   ├── CameraBase.h      #     vendor-neutral camera + ring-buffer acquisition
 │   │   ├── HikCamera.h       #     HikRobot implementation (MVS SDK)
 │   │   ├── SimCamera.h       #     simulated camera (walking Gaussian spot)
-│   │   ├── UC2_RingBuff.h    #     ring buffer + disk streamer
+│   │   ├── UC2_RingBuff.h    #     ring buffer + disk streamer (heap or shared memory)
+│   │   ├── RemoteCamera.h    #     a camera in its own process, seen from the application
+│   │   ├── CamWorker.h       #     the camera process (serves one camera)
+│   │   ├── CamIpc.h          #     messages between the two (Unix socket, fd passing)
 │   │   ├── MvsCamera.h       #     thin MVS SDK wrapper (enumerate/open/nodes)
 │   │   ├── CaptureApp.h      #     connection test shared by CLI + Python
 │   │   ├── ImageWindow.h     #     minimal X11 preview window
+│   │   ├── UC2Version.h      #     hik::version(), from the file VERSION
 │   │   └── hikLog.h          #     logging with a replaceable sink
 │   ├── src/                  #   library sources
+│   ├── worker/               #   uc2_cam_worker: main() of the camera process
 │   └── tests/                #   C++ unit tests (Catch2)
 ├── Examples/                 # programs built on the core (-DHIK_BUILD_EXAMPLES, default ON)
 │   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
@@ -45,12 +55,15 @@ UC2_cam_py/
 │   ├── hikrobot.py           #   HikRobot vendor class (+ model table)
 │   ├── simulated.py          #   simulated vendor class
 │   ├── _preview.py           #   live-view window behind create_camera(debug_window=True)
+│   ├── _process.py           #   starts the camera process (separate_process=True)
 │   ├── defaults.py           #   default values (later from config.yaml)
 │   └── __main__.py           #   `python -m uc2_cam_py`: pick a camera, live view
 ├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
 ├── Docs/                     # interface spec, ring-buffer reference, tooling
 ├── CMakePresets.json         # build variants debug | profile | asan | tsan
 ├── pyproject.toml            # Python packaging (scikit-build-core + pybind11, uv)
+├── VERSION                   # the version number, the only place it is written down
+├── CHANGELOG.md              # what changed in which version
 └── README.md
 ```
 
@@ -59,51 +72,64 @@ UC2_cam_py/
 ```mermaid
 flowchart TD
     U["Your Python code"] --> P
-    subgraph P["uc2_cam_py — Python package"]
-        CAM["create_camera · Camera  ·  camera.py"]
-        DATA["ImgData · ImgMetaData  ·  data.py"]
-        VEND["HikRobotCamera · SimulatedCamera"]
-        LOG["log forwarder thread  ·  _logging.py"]
+    subgraph APP["Application process"]
+        subgraph P["uc2_cam_py — Python package"]
+            CAM["create_camera · Camera  ·  camera.py"]
+            DATA["ImgData · ImgMetaData  ·  data.py"]
+            VEND["HikRobotCamera · SimulatedCamera"]
+            LOG["log forwarder thread  ·  _logging.py"]
+        end
+        subgraph EXT["_hik — pybind11 extension  ·  bindings/hik_py.cpp"]
+            RC["RemoteCamera (default) · CameraBase (separate_process=False)"]
+            IH["ImageHandle (zero-copy numpy view)"]
+            LQ["log queue"]
+        end
+        P --> EXT
     end
-    P --> EXT
-    subgraph EXT["_hik — pybind11 extension  ·  bindings/hik_py.cpp"]
-        CB["CameraBase · HikCamera · SimCamera"]
-        IH["ImageHandle (zero-copy numpy view)"]
-        LQ["log queue"]
-    end
-    EXT --> CORE
-    subgraph CORE["hikcam_core — C++ static lib  ·  core/"]
+    subgraph WP["Camera process uc2_cam_worker — one per camera"]
         BASE["CameraBase (start/stop, settings, deliverFrame)"]
-        RB["RingBuffer + FileStreamSink (.uc2rb)"]
+        RB["RingBuffer in a sealed memfd + FileStreamSink (.uc2rb)"]
         DEV["HikCamera → MvsCamera  ·  SimCamera"]
     end
-    CORE --> SDK["MVS SDK — libMvCameraControl  ·  External/hik/MVS → uc2_cam_py/_mvs"]
+    RC <-- "Unix socket: settings, logs, ring fd" --> BASE
+    IH -. "shared memory, read in place" .- RB
+    DEV --> SDK["MVS SDK — libMvCameraControl  ·  uc2_cam_py/_mvs"]
     SDK --> HW([HikRobot camera])
 ```
 
 Acquisition runs entirely in C++ and never needs the GIL: the device thread
 (SDK callback or simulation thread) copies each frame once into a ring slot;
 Python reads slots as read-only numpy views; a writer thread streams the slots
-to disk.
+to disk. By default all of that happens in a **camera process** per camera
+(`create_camera(..., separate_process=True)`). The ring buffer of every session
+is a memfd that the camera process hands to the application, which maps it, so
+reading stays zero-copy. Settings are calls over a socket. If a camera process
+dies, the camera is reported lost, images already read stay valid, and the other
+cameras and the application carry on. With `separate_process=False` the same
+C++ code runs in the application process instead.
 
 ```mermaid
 sequenceDiagram
     participant Py as Python (Camera)
-    participant CB as CameraBase (C++)
+    participant RC as RemoteCamera
+    participant CB as CameraBase (camera process)
     participant Dev as Device thread (SDK callback)
-    participant RB as RingBuffer
+    participant RB as RingBuffer (memfd)
     participant W as Disk writer thread
 
-    Py->>CB: start()  (GIL released)
+    Py->>RC: start()  (GIL released)
+    RC->>CB: Start (socket)
     CB->>RB: new ring for the current geometry, open session (.uc2rb)
+    CB-->>RC: ring fd (SCM_RIGHTS), then the answer
+    RC->>RB: attach (map the same pages)
     loop every frame
         Dev->>CB: deliverFrame(data)
         CB->>RB: beginWrite → memcpy (the one copy) → commitWrite
         RB-->>W: notify → writev(header, slot) to disk
     end
-    Py->>CB: get_last_image()
-    CB-->>Py: ImgData (numpy view onto the slot, keeps the ring alive)
-    Py->>CB: stop() / close()
+    Py->>RC: get_last_image()
+    RC-->>Py: ImgData (numpy view onto the shared slot, keeps the mapping alive)
+    Py->>RC: stop() / close()  → the camera process ends
 ```
 
 ## Requirements
@@ -314,6 +340,35 @@ end to end, error-code mapping, headless `ImageWindow`, SDK init) needs no
 camera. The `[hardware]` tests (built by the presets) open a HikRobot camera
 through `MvsCamera` and `HikCamera` and SKIP themselves when none is connected.
 
+## Versioning
+
+`uc2_cam_py` follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
+
+- **MAJOR** for a change that breaks existing users: the Python interface
+  (`Docs/UC2_cam_py_interface.md`) or a `.uc2rb` file layout that older readers cannot read.
+- **MINOR** for new functions, options or vendors that leave existing code working.
+- **PATCH** for bug fixes.
+
+The number is written down in one place only, the file [`VERSION`](VERSION). Everything else
+derives from it:
+
+| Where | How it gets there |
+|---|---|
+| package metadata (`pip show`, wheel name) | `pyproject.toml` reads `VERSION` (`[tool.scikit-build.metadata.version]`) |
+| C++ `hik::version()`, `_hik.__version__` | `core/cmake/UC2Version.cmake` reads `VERSION`; only `core/src/Version.cpp` sees it |
+| `uc2_cam_py.__version__` | taken from `_hik`, so it is the version of the C++ code actually loaded |
+| `uc2_cam_worker --version` | the camera process; `create_camera` refuses one of another version |
+| every recording | `softwareVersion` in the `.uc2rb` header and the `.json` sidecar, `ImgMetaData.software_version` |
+
+A build picks up a changed `VERSION` by itself (CMake re-configures, uv rebuilds).
+
+**Releasing a version:**
+
+1. Set the new number in `VERSION`.
+2. Add a section to [`CHANGELOG.md`](CHANGELOG.md) (move the "Unreleased" entries there).
+3. `uv pip install -e . --no-build-isolation`, then `uv run all_tests`.
+4. Commit, then tag the commit: `git tag -a vX.Y.Z -m "uc2_cam_py X.Y.Z"`.
+
 ## Debugging the C++ code from VS Code
 
 `.vscode/launch.json` has two configurations:
@@ -327,6 +382,12 @@ The C++ one launches `.venv/bin/python -m uc2_cam_py` under gdb, so breakpoints 
 `core/src/*.cpp` and `bindings/hik_py.cpp` are hit through the whole call chain
 (pybind11 → `CameraBase`/`HikCamera` → `MvsCamera`). A breakpoint stays "unverified" until
 `import uc2_cam_py` loads the extension, then gdb resolves it — that is expected.
+
+**Cameras run in their own process by default.** Under gdb the configuration reaches the
+application side (bindings, `RemoteCamera`); `CameraBase`, `HikCamera`, the ring buffer's
+producer and the disk writer run in `uc2_cam_worker`. To debug those, either open the camera
+with `separate_process=False` (or set `uc2_cam_py.defaults.SEPARATE_PROCESS = False` first),
+or attach a second debugger to the camera process: `gdb -p <camera.process_id>`.
 
 **The catch: `cmake --build --preset debug` alone is not enough.** Python does not import
 the `_hik*.so` from the build tree. The editable install puts a meta path finder

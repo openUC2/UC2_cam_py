@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-18 · Branch `main` · Basis-Commit `3dc4ea9` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Paket in `uc2_cam_py` umbenannt; Python-Kamera-Schnittstelle mit
-Ring Buffer, Simulations-Backend und Log-Weiterleitung umgesetzt (§13); Profiling-/Sanitizer-
-Infrastruktur (Docs/Tooling.md).
+**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `bda6bf3` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Versionierung eingeführt, Version 1.0.0 (oberster Eintrag). Davor:
+Flush-Fehler behoben, Offset und Schrotrauschen im simulierten Bild, jede Kamera in einem
+eigenen Prozess (`uc2_cam_worker`, Ring Buffer in Shared Memory).
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,204 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### HikRobot-SDK im Projekt (`External/hik/MVS`), unabhängig von `/opt/MVS`; SDK 4.7 → 4.9 — 2026-10-25
+### Versionierung eingeführt: SemVer, eine Quelle `VERSION`, Version 1.0.0 — 2026-10-27
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27. Vom Nutzer
+  entschieden:
+  - SemVer `MAJOR.MINOR.PATCH`, Start bei **1.0.0** (statt 1.0.0.0).
+  - Umfang: die Version in jeder Aufnahme, eine Versionsprüfung des Kamera-Prozesses,
+    `CHANGELOG.md` und ein Git-Tag.
+- **Vorher:** `0.2.0` stand von Hand an vier Stellen. CMake und C++ kannten keine Version, und
+  es gab keine Tags.
+- **Eine Quelle:** Die Datei `VERSION` (`1.0.0`).
+  - `core/cmake/UC2Version.cmake` liest sie vor `project()` (in beiden Konfigurationswegen),
+    prüft das Format und setzt `UC2_CAM_VERSION`. Über `CMAKE_CONFIGURE_DEPENDS` konfiguriert
+    ein Build nach einer Änderung von selbst neu.
+  - `pyproject.toml`: `dynamic = ["version"]` mit `scikit_build_core.metadata.regex` auf
+    `VERSION`; `VERSION` steht auch in den uv-cache-keys. In `uv.lock` entfällt dadurch die
+    feste Version des Projekts (bei dynamischer Version erwartet).
+- **C++:** `hik::version()` (`UC2Version.h`, `src/Version.cpp`). Nur `Version.cpp` bekommt die
+  Definition, ein Versionswechsel übersetzt also nur diese Datei.
+- **Python:** `_hik.__version__`; `uc2_cam_py.__version__` wird daraus übernommen, also die
+  Version des geladenen C++-Codes.
+- **`uc2_cam_worker --version`** gibt `uc2_cam_worker 1.0.0` aus.
+- **Aufnahmen:**
+  - `UC2_SessionHeader::softwareVersion` (`char[32]`, Offset 8328, aus `reserved2`, das von 120
+    auf 88 B schrumpft). Größe 8448 sowie `formatVersion` und `layoutVersion` bleiben gleich;
+    ältere Dateien liefern `""`.
+  - Die Version steht auch in der JSON-Begleitdatei (`softwareVersion`) und in
+    `ImgMetaData.software_version` (neues Pflichtfeld nach `comment`).
+- **Versionsprüfung:**
+  - Das Hallo trägt jetzt die Softwareversion; `kProtocolVersion` 1 → 2.
+  - `RemoteCamera` vergleicht sie mit `hik::version()`. Bei Abweichung oder fehlender Version
+    beendet sie den Prozess und wirft `runtime_error` (in Python `RuntimeError`) mit beiden
+    Versionen und dem Hinweis „reinstall uc2_cam_py“.
+  - Dabei setzt sie `m_closing`, damit keine zweite, irreführende ERR „camera lost“ erscheint.
+    Gefunden bei der Gegenprobe mit einem echten 1.0.1-Worker.
+- **Tests:**
+  - C++: Version im Kopf (`[ring]`, `[stream]`, auch in der JSON-Datei), Hallo mit Version
+    (`RawWorker`), neuer Test „a camera process of another version is refused“.
+  - Der Test-Helfer `core/tests/fake_worker.cpp` (Target `uc2_cam_fake_worker`) wird über
+    `UC2_FAKE_WORKER_VERSION`/`UC2_FAKE_WORKER_PIDFILE` gesteuert. Geprüft werden: falsche
+    Version, fehlende Version, kein übrig gebliebener Prozess, keine ERR.
+  - Python: `__version__` = `VERSION` = `_hik.__version__` = Paket-Metadaten; neu:
+    `uc2_cam_worker --version`; `software_version` in `get_image_info()`, im Dateikopf und in
+    der JSON-Datei; `test_api_surface` angepasst.
+- **Doku:**
+  - `CHANGELOG.md` (neu, Keep a Changelog) und README-Abschnitt „Versioning“ (Regeln, Quelle,
+    Release-Ablauf); `VERSION`/`CHANGELOG.md` im README-Baum.
+  - Interface-Doku: 1.0.0, `software_version`, Versionsprüfung in §7.9.
+  - `RingBuff_REF.md`: Kopftabelle, Sidecar.
+- **Verifikation:**
+  - `uv run all_tests` → C++ 138/138, Python 185 passed / 21 skipped.
+  - `build/core` 134/134; `ctest --preset tsan` und `--preset asan` jeweils 138/138.
+  - Ruff sauber, Pyright 0 Fehler. Das Wheel heißt `uc2_cam_py-1.0.0-cp312-…`, `METADATA`
+    `Version: 1.0.0`.
+  - Probe „eine Quelle“: `VERSION` auf 1.0.1 → CMake konfiguriert selbst neu, übersetzt wird
+    nur `Version.cpp`, Python, `_hik`, Metadaten und Worker melden 1.0.1; danach zurück auf
+    1.0.0.
+  - Gegenprobe: Ein echter 1.0.1-Worker gegen die 1.0.0-Bibliothek ergibt einen `RuntimeError`
+    mit klarer Meldung.
+- **Hinweis TSan:** Wer die Testbinary direkt unter TSan startet, braucht `TSAN_OPTIONS` mit
+  `tools/sanitizers/tsan.supp` wie im Preset. Sonst meldet der absichtlich „reißende“
+  Seqlock-Test `test_ringbuffer_mt.cpp` Races.
+- **Offen:** Git-Tag `v1.0.0` nach dem Commit; Branch klären (aktiv ist `transfer_to_processes`).
+
+### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`bda6bf3`)
+
+- **Plan:** `~/.claude/plans/nested-wandering-jellyfish.md`, freigegeben 2026-10-27. Vom Nutzer
+  entschieden: Das Rauschen folgt der Poisson-Statistik über die Normalnäherung N(λ, λ); der
+  Offset beträgt 10 % der Spot-Höhe, und die Spot-Höhe sinkt, damit nichts abgeschnitten wird.
+- **Flush (§11.3 P3):**
+  - Ursache: `flush()` reihte seine Marke über `_emit_log()` ein. `queueSink` verwirft jede
+    Meldung, solange die Queue `kLogQueueMax` = 10 000 Einträge hat.
+  - Fix: Das neue Binding `_hik._emit_flush_marker(text)` hängt die Marke direkt an die
+    `LogQueue`, vorbei am Limit und am Level-Filter. `_logging.flush()` benutzt es.
+  - Neuer Test `test_flush_survives_a_full_log_queue` (deterministisch: Der Forwarder hängt,
+    die Queue läuft über). Er ist vor dem Fix fehlgeschlagen und danach grün. Die 25er-Schleife
+    über `tests/test_logging.py` hatte danach 0 Fehlschläge.
+- **Simulation:**
+  - `sim::renderNoisySpot(…, offset, seed)` in `SimPattern.h/.cpp`: λ = Offset + Spotwert,
+    gezogen aus N(λ, λ) (`std::mt19937` + `normal_distribution<float>`), gerundet und auf den
+    Wertebereich begrenzt. Die Gauß-Profile teilt sie über einen internen Helfer mit
+    `renderSpot()`, das rauschfrei bleibt (`Examples/RingBuffExample.cpp`, exakte Tests).
+  - `SimCamera::run()`: Spot-Höhe Mono16 54 000 (vorher 60 000), Mono8 180 (vorher 240),
+    Offset 10 % davon (`kOffsetRatio`). Seed = Bildnummer der Sitzung, die Bilder sind also
+    reproduzierbar. `spotPositionFor()` bleibt exakt.
+  - Doku: `SimCamera.h`, `SimPattern.h`, `simulated.py`, `Docs/UC2_cam_py_interface.md` §8.
+- **Tests:**
+  - Neuer Header `core/tests/test_image_helpers.h`: `spotCentroid()` (Hintergrund = Median,
+    Gewicht = max(v − Hintergrund − 0,2·(Max − Hintergrund), 0)) und `backgroundStats()`.
+    Er ersetzt die lokalen `centroid()` in `test_simcamera.cpp` und `test_worker.cpp`.
+  - `tests/test_images.py`: `_centroid` genauso; `test_view_survives_close` vergleicht nach
+    `stop()` + `close()` mit einer Kopie statt `max() == 60000`.
+  - Neu: C++ `renderNoisySpot adds an offset with shot noise` (Mittelwert und Varianz ≈ Offset
+    für Mono16 und Mono8, Schwerpunkt, Seed, Begrenzung) und `the simulated image has an offset
+    with shot noise`. Python `test_simulated_image_has_an_offset_with_shot_noise[Mono16|Mono8]`.
+  - **Abweichung vom Plan:** Der Python-Test misst die Spot-Höhe als Mittelwert der 3×3 Pixel an
+    der Spot-Position, nicht als Max − Median. Bei Mono8 (σ = 14 an der Spitze) läge das
+    Maximum etwa 12 % zu hoch und damit außerhalb der ±10 %.
+- **Verifikation:**
+  - `uv run all_tests` → C++ 136/136, Python 184 passed / 21 skipped.
+  - `build/core` 132/132. TSan und ASan/UBSan jeweils `[sim],[worker]` grün.
+  - Ruff sauber, Pyright 0 Fehler.
+  - `UC2_DISPLAY_SECONDS=10 uv run py_tests -m display`: 2 passed.
+  - Gemessen bei 1920×1200 (x86): Mono16 und Mono8 halten 10 und 30 fps, im Kamera-Prozess wie
+    im Hauptprozess.
+- **Offen (Nutzer):** `uv run main` mit Debugfenster von Hand ansehen (Rauschen sichtbar?);
+  Laufzeit auf dem Pi 5 (Display-Test bei 1920×1200).
+
+### Jede Kamera in einem eigenen Prozess (`uc2_cam_worker`), Ring Buffer in Shared Memory — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`7679220`)
+
+- **Plan:** `.claude/currentPlan.md`, freigegeben 2026-10-25. Vom Nutzer entschieden:
+  `separate_process` ist Standard und abschaltbar; die CPU-Affinität kommt später (→ Todos.md).
+  Begründung: Linux verteilt die C++-Threads schon heute (sie halten den GIL nicht). Der Prozess
+  bringt Abschottung vom Closed-Source-SDK, Kontrolle über *alle* Threads einer Kamera
+  (SDK-intern inklusive) und Logs je Kamera.
+- **Ring Buffer, Layout-Version 2:**
+  - `Config::sharedMemory` → `memfd_create` + `fallocate` (Speichermangel als Fehler in
+    `configure()`, nicht als SIGBUS) + Seals SHRINK|GROW|SEAL + `MAP_SHARED`; `sharedFd()`.
+  - `RingBuffer::attach(fd)` prüft eine private Header-Kopie gegen Siegel und `fstat`-Größe.
+    Danach kommen Geometrie, `payloadAt(slot)` (nicht mehr aus `rec.payloadOffset`) und
+    `sessionHeader()` nur aus dieser Kopie; `nbytes` wird geklemmt. Ein angehängter Ring liest nur.
+  - `waitForFrame()` per futex auf `UC2_Control::frameSignal`/`frameWaiters`, ersetzt
+    `m_frameReady`; die Größe bleibt 576 B.
+  - **Kein prozessübergreifender Mutex**; das weicht vom alten Plan `PTHREAD_PROCESS_SHARED` ab.
+- **Protokoll** `CamIpc.h/.cpp`:
+  - `SOCK_SEQPACKET`, 16-B-Kopf plus getaggte Felder, jeder Lesezugriff grenzgeprüft, ≤ 64 KiB.
+  - fd per `SCM_RIGHTS` (`MSG_CMSG_CLOEXEC`); überzählige oder unerwartete fds werden geschlossen.
+- **Kamera-Prozess** `CamWorker.cpp` + `core/worker/uc2_cam_worker.cpp`:
+  - Ablauf: Hello → Open-Request → Befehle nacheinander.
+  - **Abweichung vom Plan:** Hersteller und Optionen kommen im Open-Request, nicht per argv,
+    damit Fehler als typisierte Antwort zurückkommen (ValueError/IndexError/RuntimeError wie im
+    Prozess).
+  - Vor jeder Antwort folgt ein Ring-Event, falls `ring()` gewechselt hat.
+  - Logs gehen als Events: vom Befehls-Thread blockierend (also vor der Antwort), von anderen
+    Threads `MSG_DONTWAIT`.
+  - Ende bei Close, Socket-EOF, SIGTERM/SIGHUP; die Kamera wird sauber geschlossen, die
+    `.uc2rb`-Datei ist vollständig. SIGINT wird ignoriert.
+  - Name `uc2cam-<serial>`.
+- **`RemoteCamera`** `RemoteCamera.h/.cpp`:
+  - Start per `posix_spawn`: Das Kind-Ende liegt auf fd 3, sonst wird nichts vererbt;
+    Signalmaske und -defaults werden zurückgesetzt.
+  - Ein Empfangs-Thread; Timeouts 5 s/30 s; der Zustand (running, lastRestarted) steckt in jeder
+    Antwort.
+  - „Verloren“ bei EOF oder Timeout (beim Timeout zusätzlich SIGKILL): einmal ERR mit Exit-Code
+    oder Signal.
+  - Lesen läuft lokal am angehängten Ring. `close()`: `waitpid` 2 s, sonst SIGKILL.
+- **Kleinere Erweiterungen:**
+  - `hikLog`: `ScopedLogSource`/`currentLogSource()` (thread_local).
+  - `CameraBase`: `BufferConfig::sharedMemory`, `streamStats()`.
+  - `SimCamera`: `pixelFormatByName()`.
+- **Bindings:**
+  - Die Kamera-Tabelle ist jetzt die Vorlage `bindCameraApi<Cam>()` für `CameraBase` **und**
+    `RemoteCamera`; alle Geräteaufrufe laufen ohne GIL.
+  - `_hik.RemoteCamera(...)` mit `pid`, `is_lost`, `log_source` und den Sim-Extras.
+  - `_pop_log` liefert `(level, message, source)`.
+- **Python:**
+  - `create_camera(..., separate_process=None)` → `defaults.SEPARATE_PROCESS` (True);
+    `_process.py`.
+  - Die Simulated-Optionen sind typgeprüft (TypeError auf beiden Wegen).
+  - `Camera.process_id`; eine verlorene Kamera → `_require_open()` wirft RuntimeError.
+  - `_logging` ordnet Meldungen nach `source` dem Logger ihrer Kamera zu. Das erledigt §13
+    „mehrere Kameras → letzter Logger“ für den Prozess-Weg.
+- **CMake:** `uc2_cam_worker` in `core/CMakeLists.txt` (beide Konfigurationswege), installiert
+  nach `uc2_cam_py/` mit `INSTALL_RPATH $ORIGIN/_mvs/lib/<arch>`; Tests per `UC2_CAM_WORKER_PATH`.
+- **Tests:**
+  - Catch2 +25: `[shm]` 8, `[shm][mt]` 3 (fork; Kind per SIGKILL mitten im Frame), `[ipc]` 7,
+    `[worker]` 7.
+  - pytest +30: `test_process.py` 8, `test_hik.py` +1 (`/proc/<worker>/maps`), Fälle in
+    `test_init`/`test_api_surface`. Die Fixture `camera` läuft über **Simulated (Prozess)**,
+    **Simulated-in-process** und HikRobot.
+- **Verifikation:**
+  - `uv run all_tests` → C++ 134/134, Python 181 passed / 21 skipped.
+  - `build/core` 130/130 · TSan 134/134 · ASan 134/134 (`build/asan` frisch konfiguriert, stammte
+    noch aus `UC2_HIKpy`) · `[worker],[shm]` 5× hintereinander unter TSan.
+  - Das Wheel enthält `uc2_cam_py/uc2_cam_worker` (`rwxr-xr-x`, DT_RPATH `$ORIGIN/_mvs/lib/64`).
+  - `uv run main`: Debugfenster, Prozess `uc2cam-SIM-0001` sichtbar, nach dem Ende weg.
+  - Ruff sauber. Pyright: Paket 0 Fehler, nur mit `uvx pyright --pythonpath .venv/bin/python`
+    (ohne findet es die venv nicht); die Testdateien haben wie auf HEAD Fehler aus dem
+    `dict(**SIM_OPTIONS)`-Muster.
+- **Gefunden, nicht behoben (vorbestehend, außerhalb des Plans; behoben 2026-10-27, Eintrag darüber):**
+  `test_logging.py::test_no_deadlock_when_stopping_under_log_load` scheitert sporadisch an
+  `assert _logging.flush()` (5/25 Läufe). Die Flush-Marke wird verworfen, wenn die Log-Queue
+  (10 000) gerade voll ist. Nachbau im selben Prozess: 2/25, das Problem ist also älter.
+  Fix-Vorschlag: die Marke an der Grenze vorbei einreihen oder bei voller Queue die älteste
+  Meldung verwerfen.
+- **Offen (Nutzer):**
+  - HikRobot im Kamera-Prozess an der Hardware (`uv run py_tests -m hardware`, GigE und USB3,
+    Enumeration im Hauptprozess bei geöffneter Kamera), aarch64.
+  - VS Code „Debug C++“ erreicht den Kamera-Code nicht mehr (→ README, Todos.md).
+
+### HikRobot-SDK im Projekt (`External/hik/MVS`), unabhängig von `/opt/MVS`; SDK 4.7 → 4.9 — 2026-10-25
+
+**Implementiert:** ja · **Committet:** ja (`1be0de2`)
 
 - **Pakete und Import:** Der Nutzer hat MVS 5.1.1 (Linux x86_64, aarch64, Windows) als Zips in
   `External/hik/` gelegt. `uv run fetch_mvs` (`tools/devtasks/src/uc2_devtasks/mvs.py`) entpackt
@@ -44,7 +239,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Speichern auf Platte zur Laufzeit umschalten — `cam.store_image_data = True/False` — 2026-10-25
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`f37014b`)
 
 - **Python:** `store_image_data` ist jetzt eine Property mit Setter (Entscheidung des Nutzers).
   Während der Aufnahme **nahtlos**: Ring, Sequenz, Live-Bild und Session laufen weiter;
@@ -76,7 +271,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Kurzbefehle `uv run main | py_tests | c_tests | all_tests`, venv repariert — 2026-10-23
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`0555f9f`)
 
 - uv 0.12 hat keinen Task-Runner; `uv run <name>` startet ein Skript aus `.venv/bin`. Die vier
   Befehle sind deshalb Konsolen-Skripte des Entwickler-Pakets `tools/devtasks`
@@ -96,7 +291,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Interaktives `python -m uc2_cam_py`, `list_cameras()`, Debugfenster wartet auf Bilder — 2026-10-23
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`0555f9f`)
 
 - **CLI** (`__main__.py`): `list_cameras()` → Tabelle `Index Name Vendor Connection Serial`
   (stdout), Index eingeben → `create_camera(vendor, serial, store_image_data=False,
@@ -186,19 +381,24 @@ HikRobot/MVS und Simulation), shared-memory-fähiger Ring Buffer mit Plattenstre
 mit austauschbarer Senke. Python greift über pybind11 kopierfrei auf die Bilder zu.
 
 ```
-core/include, core/src   C++-Core (namespace hik) — die eigentliche Logik
+core/include, core/src   C++-Core (namespace hik) — die eigentliche Logik; dazu RemoteCamera,
+                         CamWorker (Kamera-Prozess) und CamIpc (Protokoll)
+core/worker/             uc2_cam_worker: main() des Kamera-Prozesses (beide Konfigurationswege)
 bindings/hik_py.cpp      pybind11-Modul `_hik`
 python/uc2_cam_py/       Python-Paket: camera.py (Camera, create_camera), data.py (ImgData,
                          ImgMetaData), hikrobot.py/simulated.py, defaults.py,
                          _preview.py (Fenster für debug_window), _logging.py (Log-Forwarder),
+                         _process.py (startet den Kamera-Prozess),
                          _resources.py, _hik.pyi
 core/tests/              Catch2-v3-Tests
 tests/                   pytest-Tests
 Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, braucht Kamera),
                          RingBuffExample.cpp (ohne Kamera); nur Top-Level-Build, HIK_BUILD_EXAMPLES
 Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
+VERSION                  die Versionsnummer (SemVer), einzige Quelle; CHANGELOG.md je Version
 CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
-core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING
+core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING;
+                         UC2Version.cmake: liest VERSION → UC2_CAM_VERSION
 tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind,
                          devtasks/ (uv run main | py_tests | c_tests | all_tests | fetch_mvs)
 External/hik/            HikRobot-Pakete (Zips) und daraus das SDK in MVS/ — beides nicht in Git,
@@ -209,9 +409,11 @@ External/hik/            HikRobot-Pakete (Zips) und daraus das SDK in MVS/ — b
 Schichtung — nicht kurzschließen:
 
 ```
-python/uc2_cam_py (Camera) ─→ bindings/hik_py (_hik) ─→ CameraBase ─┬─→ HikCamera ─→ MvsCamera ─→ MVS-SDK
-                                                                    ├─→ SimCamera
-                                                                    └─→ RingBuffer + FileStreamSink
+python/uc2_cam_py (Camera) ─→ bindings/hik_py (_hik) ─┬─→ RemoteCamera ══ Socket ══ uc2_cam_worker ─→ CameraBase …
+   (separate_process=True, Standard)                   │        └─→ RingBuffer::attach (memfd, nur lesen)
+   (separate_process=False)                            └─→ CameraBase ─┬─→ HikCamera ─→ MvsCamera ─→ MVS-SDK
+                                                                       ├─→ SimCamera
+                                                                       └─→ RingBuffer + FileStreamSink
 Examples/HikStandalone.cpp ─→ CaptureApp ─→ MvsCamera   (Diagnose; auch run_connection_test)
 ```
 
@@ -247,7 +449,9 @@ angegebenen Abschnitt:
 | **ROI/Binning während der Aufnahme starten die Session neu.** Der Ring Buffer friert seine Geometrie ein; `CameraBase` stoppt, ändert, startet neu → neuer Ring, neue `.uc2rb`-Datei. Jeder `start()` legt ohnehin einen neuen Ring an. | §13 |
 | **Catch2 definiert `INFO`/`WARN` als Makros.** In Tests `hikLog.h` vor Catch2 einbinden und `(hik::INFO)(...)` schreiben, sonst zerlegt der Präprozessor Definition bzw. Aufruf. | `core/tests/test_log.cpp` |
 | **Der Payload-Datenwettlauf im Ring Buffer ist Absicht.** Im `FullPolicy::Overwrite` kann ein Consumer Bytes lesen, die der Producer gerade überschreibt; `ReadHandle::stillValid()` ist der Weg, das zu erfahren. TSan, helgrind und drd melden es; für die MT-Tests ist es in `tools/sanitizers/tsan.supp` bzw. `tools/valgrind/hik.supp` gezielt unterdrückt (Docs/Tooling.md §5). `FullPolicy::Wait` vermeidet es ganz. | §11.1 |
-| **Der Speicherblock des Ring Buffers muss zeigerfrei, vtable-frei und POD bleiben** — das ist es, was den geplanten Multi-Prozess-Schritt billig hält. `static_assert`s in `UC2_RingBuff.cpp` sichern das ab. | §7.1 |
+| **Der Speicherblock des Ring Buffers muss zeigerfrei, vtable-frei und POD bleiben** — darauf beruht, dass die Anwendung ihn aus dem Kamera-Prozess abbildet. `static_assert`s in `UC2_RingBuff.cpp` sichern das ab. Jede Layoutänderung erhöht `kLayoutVersion` (heute 2), sonst weist `attach()` sie nicht ab. | §7.1, Docs/RingBuff_REF.md §12 |
+| **Der Kamera-Code läuft standardmäßig in einem anderen Prozess.** Breakpoints in `CameraBase`/`HikCamera`/Ring-Producer/Writer trifft gdb unter `python -m uc2_cam_py` nicht mehr — `separate_process=False` (oder `defaults.SEPARATE_PROCESS = False`) bzw. `gdb -p <process_id>`. Ebenso läuft ein SDK-Absturz dort, nicht in Python. | README „Debugging“ |
+| **Jeder fd der Anwendung zum Kamera-Prozess muss CLOEXEC sein** (Socket, memfd, empfangene fds über `MSG_CMSG_CLOEXEC`). Erbt ein zweiter Kamera-Prozess das Socket-Ende des ersten, sieht der erste nie EOF, wenn die Anwendung stirbt. **Kein `PR_SET_PDEATHSIG`:** Es feuert, wenn der *Thread* endet, der gestartet hat — eine Kamera aus einem kurzlebigen Python-Thread würde sterben. Das Ende der Anwendung erkennt der Kamera-Prozess am Socket-EOF. | `RemoteCamera::spawn()`, `CamWorker.h` |
 
 ---
 
@@ -257,7 +461,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 171 Tests, ~15 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 206 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -272,13 +476,13 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 109 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 138 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 105 Tests (ohne [hardware])
+ctest --test-dir build/core       # 134 Tests (ohne [hardware])
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 
@@ -364,7 +568,7 @@ Diese vier wurden vor der Implementierung explizit entschieden — nicht ohne R�
 | **Plattenformat** | Eine append-only Container-Datei je Session (`.uc2rb`) + `.json`-Sidecar | ein `writev()` pro Frame; optimal für Pi 5 / SD-Karte |
 | **C++-Standard** | Projektweiter Sprung auf **C++17** | `std::filesystem`, `std::optional` verfügbar; alle Alt-TUs geprüft |
 | **Wait-Policy** | Warten auf **alle registrierten** Consumer, mit Timeout → dann überschreiben | ein abgestürzter Consumer kann die Kamera nicht dauerhaft blockieren |
-| **Multi-Prozess** | Layout jetzt shm-fähig, aber **nur Heap-Allokator** ausgeliefert | shm ist später eine zusätzliche VTable-Implementierung, keine Protokolländerung |
+| **Multi-Prozess** | Layout jetzt shm-fähig, aber **nur Heap-Allokator** ausgeliefert | shm ist später eine zusätzliche VTable-Implementierung, keine Protokolländerung — **2026-10-27 umgesetzt** (memfd, `attach()`, Layout v2) |
 
 ---
 
@@ -404,10 +608,11 @@ Arithmetik prozessübergreifend eindeutig.
   (gerade = stabil, ungerade = Schreibvorgang läuft). Ein Leser liest den Zähler vor und
   nach der Nutzung; `ReadHandle::stillValid()` sagt, ob der Producer den Slot
   zwischenzeitlich recycelt hat.
-- **`std::mutex`/`std::condition_variable` liegen außerhalb des Blocks** und dienen nur
-  dazu, Leerlauf-Spinning zu vermeiden. Beim Multi-Prozess-Schritt werden sie durch
-  `pthread_*` mit `PTHREAD_PROCESS_SHARED` ersetzt (läuft auf Linux **und** macOS) —
-  **ohne** Änderung am Protokoll.
+- **`std::mutex`/`std::condition_variable` liegen außerhalb des Blocks** und bremsen nur den
+  Producer im Wait-Modus (der im Kamera-Prozess läuft). **Umgesetzt 2026-10-27 ohne
+  prozessübergreifenden Mutex:** `waitForFrame()` schläft per futex auf
+  `UC2_Control::frameSignal`, das funktioniert über Prozessgrenzen, und ein toter Prozess kann
+  keine Sperre halten. Der frühere Plan `PTHREAD_PROCESS_SHARED` ist damit hinfällig.
 - Genau **ein** Producer: ein zweites gleichzeitiges `beginWrite()` wird abgewiesen und
   geloggt, nicht stillschweigend verschränkt.
 
@@ -546,9 +751,8 @@ registrieren.
    Capsule-Destruktor. Noch keine Implementierung vorhanden.
 3. ~~**Verdrahtung mit der Kamera**~~ — **erledigt 2026-10-18** (§13): `CameraBase::deliverFrame`;
    `FrameGrabber` entfällt.
-4. **Multi-Prozess** — `shm_open`+`mmap`-Implementierung von `UC2_MemoryOps`, plus Umstieg
-   der Condvar auf `PTHREAD_PROCESS_SHARED`. Zusätzlich zu klären: Namensvergabe der
-   Segmente und Aufräumen nach Absturz.
+4. ~~**Multi-Prozess**~~ — **erledigt 2026-10-27** (Eintrag oben): memfd statt `shm_open`, also
+   keine Namen und nichts aufzuräumen nach einem Absturz; futex statt `PTHREAD_PROCESS_SHARED`.
 5. ~~**README**~~ — **erledigt 2026-10-18**.
 6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die `static_assert`s auf
    `is_always_lock_free` würden dort sofort anschlagen, falls etwas nicht passt.
@@ -570,6 +774,7 @@ CTest-Punkt sind dessen Befunde **unverändert offen** — am Altcode wurde nich
 | **P4** | `LICENSE` fehlt, `pyproject.toml:11` deklariert aber MIT | Todo „soll MIT bleiben?" offen |
 | ~~P4~~ | ~~`CMakeLists.txt:10` setzt `HIK_BUILD_APP` mit `CACHE … FORCE`~~ | **erledigt 2026-09-24**: `HIK_BUILD_APP` entfällt, `HikStandAlone` liegt unter `Examples/` (Schalter `HIK_BUILD_EXAMPLES`, im Wheel OFF) |
 | **P4** | keine CI (`.github/` fehlt) | die 78 Tests liefen bisher nur lokal |
+| ~~P3~~ | ~~`_logging.flush()` gibt sporadisch `False` (2 s gewartet): die Flush-Marke wird verworfen, wenn die Log-Queue voll ist (`queueSink`, 10 000 Einträge)~~ | **erledigt 2026-10-27**: `_hik._emit_flush_marker()` reiht die Marke am Limit vorbei ein; Test `test_flush_survives_a_full_log_queue` |
 
 ---
 

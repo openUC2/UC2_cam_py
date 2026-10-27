@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 0.2.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 1.0.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -46,6 +46,11 @@ with uc2_cam_py.create_camera(vendor="HikRobot", connection_type="USB3",
 - **Recording.** With `store_image_data=True` every image is also streamed to a `.uc2rb`
   file (plus a `.json` sidecar) in `image_file_path`, by a writer thread that never blocks the
   camera. `store_image_data` can be switched at any time, also while recording (§4).
+- **One process per camera.** By default (`separate_process=True`) each camera runs in a
+  process of its own (`uc2_cam_worker`): device, acquisition thread, disk writer and all SDK
+  threads. The kernel spreads these processes over the CPU cores, and a crashing camera SDK
+  ends only its own process. Settings travel over a socket; images do not - the ring buffer
+  lives in shared memory and is read zero-copy as before (§7.9).
 - **Units at the interface:** exposure in **ms**, frame rate in **1/s**, gain in **dB**,
   pixel pitch/size in **µm**, ROI and pixel count in **unbinned sensor pixels**, timestamps in
   **ns** (monotonic clock). Vendors convert from their firmware units.
@@ -55,7 +60,7 @@ with uc2_cam_py.create_camera(vendor="HikRobot", connection_type="USB3",
 ```python
 create_camera(vendor=None, connection_type=None, serial=None, index=None, buffer_size=None,
               start_on_init=False, image_file_path=None, store_image_data=True, logger=None,
-              debug_window=False, **vendor_options) -> Camera
+              debug_window=False, separate_process=None, **vendor_options) -> Camera
 ```
 
 | Parameter | Type | Default | Description |
@@ -70,6 +75,7 @@ create_camera(vendor=None, connection_type=None, serial=None, index=None, buffer
 | `store_image_data` | `bool` | `True` | Write every image to disk (in `image_file_path`). Can be switched later with the setting of the same name ([§4](#4-settings-readwrite)). |
 | `logger` | logger-like `\| None` | `None` → `logging.getLogger("uc2_cam_py")` | Object with `error`, `warning` (or `warn`), `info`, `debug` methods. |
 | `debug_window` | `bool` | `False` | *Addition.* Show the newest image in a window until `close()` (X11, 8-bit grey view, contrast stretched). The **only** way to open a window. Without X11: ERROR, no exception, the camera works without the window. |
+| `separate_process` | `bool \| None` | `None` → `defaults.SEPARATE_PROCESS` (`True`) | *Addition.* Run the camera in a process of its own (Linux), see [§7.9](#79-camera-process). `False` keeps it in this process, e.g. for a debugger. |
 | `**vendor_options` | | | *Addition.* Vendor-specific extras, see [§8](#8-vendors). |
 
 **Camera selection:**
@@ -102,10 +108,10 @@ keep their current values. The camera is put into free-run mode (no trigger).
 
 | Exception | Raised for |
 |---|---|
-| `TypeError` | an argument of the wrong type, or a logger without the required methods |
+| `TypeError` | an argument of the wrong type (vendor options included), or a logger without the required methods |
 | `ValueError` | an unknown vendor or connection type, `serial` and `index` together, `buffer_size < 2`, `index < 0` |
 | `IndexError` | an `index` beyond the connected cameras |
-| `RuntimeError` | no matching camera, a camera that cannot be opened (e.g. in use), or an unknown pixel count |
+| `RuntimeError` | no matching camera, a camera that cannot be opened (e.g. in use), an unknown pixel count, or a camera process that cannot be started |
 | `MemoryError` / `OSError` | failed resource checks (see above) |
 
 ## 3. Properties (read-only)
@@ -135,6 +141,7 @@ keep their current values. The camera is put into free-run mode (no trigger).
 | `pixel_format` | `str` | *Addition.* E.g. `"Mono8"`, `"Mono12"`, `"BayerRG8"`, `"RGB8"`. |
 | `image_size` | `(int, int)` | *Addition.* Current image (width, height) after ROI and binning. |
 | `recording_file` | `str \| None` | *Addition.* Path of the current or last `.uc2rb` file. |
+| `process_id` | `int \| None` | *Addition.* Process id of the camera process; `None` with `separate_process=False`. |
 
 Capabilities and ranges are evaluated **live**. Exposure, gain and frame rate count as settable
 even while the firmware's auto mode is active, because writing a value switches auto off.
@@ -231,6 +238,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 | `slot_stride` | `int` | Bytes between slot payloads |
 | `camera_id` | `str` | `"<model>-<serial>"` |
 | `comment` | `str` | JSON with the camera settings at the session start (vendor, model, serial, exposure, gain, frame rate, binning, ROI, pixel pitch, ...) |
+| `software_version` | `str` | Version of `uc2_cam_py` that wrote the session, e.g. `"1.0.0"` (`""` in files written before 1.0.0) |
 
 | Member | Description |
 |---|---|
@@ -292,9 +300,11 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - Format details: [RingBuff_REF.md](RingBuff_REF.md) §8.
 
 ### 7.6 Logging
-- **Which logger.** Python-side messages of a camera go to its `logger`. The C++ core's messages
-  (SDK, ring buffer, disk writer) are forwarded to the logger of the most recently created
-  camera, or to `logging.getLogger("uc2_cam_py")`.
+- **Which logger.** Python-side messages of a camera go to its `logger`. The C++ messages of a
+  camera process (SDK, ring buffer, disk writer) carry that camera's tag and go to **its**
+  `logger`, also with several cameras. Messages of the C++ core in this process
+  (`separate_process=False`, SDK enumeration) are forwarded to the logger of the most recently
+  created camera, or to `logging.getLogger("uc2_cam_py")`.
 - **Levels.** C++ levels map to `error` / `warning` / `info` / `debug`.
 - **GIL.** C++ threads never wait for the GIL. They put messages into a queue, and a Python
   daemon thread delivers them with the GIL held. A busy Python thread therefore cannot stall the
@@ -320,9 +330,36 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 | A value outside the type constraint | `ValueError` |
 | An index out of range | `IndexError` |
 | An empty buffer slot | `LookupError` |
-| A wrong state (closed camera, start failed) | `RuntimeError` |
+| A wrong state (closed camera, lost camera process, start failed) | `RuntimeError` |
 | The setting is not supported by the camera | **no exception**, log entry per [§4](#4-settings-readwrite) |
 | A value outside the camera's range | clamped, INFO |
+
+### 7.9 Camera process
+
+With `separate_process=True` (the default) `create_camera` starts the program `uc2_cam_worker`
+(installed next to the extension module) and opens the camera in it. Linux only.
+
+- **Visible.** `process_id` is its pid; in `ps`/`top`/`htop` it is called `uc2cam-<serial>`.
+- **Same version.** The camera process reports its version when it starts. If it differs from
+  the package's (a stale `uc2_cam_worker` from another build), `create_camera` raises
+  `RuntimeError` naming both versions. `uc2_cam_worker --version` prints the version by hand.
+- **Images.** Every session's ring buffer is a sealed memfd that the camera process hands over;
+  this process maps it and reads it zero-copy. `ImgData` keeps its mapping alive - also after
+  `close()` and also after the camera process has died. Nothing the camera process does can
+  make reading an image fault.
+- **Settings and states** are calls over a socket (answer within 5 s, 30 s for open, start,
+  stop, ROI/binning), so they cost a round trip of some 10 µs.
+- **Lost camera.** If the camera process dies or does not answer in time (it is then killed),
+  one ERROR names the reason (exit code or signal). From then on `is_recording` is `False`,
+  every setting and `start()` raise `RuntimeError`, `get_last_image()` still returns the last
+  images of the session, and `close()` returns at once.
+- **End.** `close()` ends the camera process and collects it (killed after 2 s if needed).
+  If the application dies without `close()`, the camera process notices that its socket has
+  closed, closes the camera properly - a recording file is complete - and ends. SIGINT
+  (Ctrl+C) is ignored by the camera process; closing is the application's business.
+- **SDK.** The camera process uses the same SDK copy (`uc2_cam_py/_mvs`) and inherits the
+  environment `_sdk_env` set up. Enumeration (`list_cameras`, `list_devices`) still runs in
+  this process.
 
 ## 8. Vendors
 
@@ -354,6 +391,10 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   buffer path.
 - **Image.** A Gaussian spot walks row by row over a 5 × 4 grid of the sensor.
   `cam.spot_position(sequence)` returns its exact centre for every image.
+  - Spot height 54 000 (Mono16) or 180 (Mono8), on a constant offset of 10 % of that height.
+  - Shot noise: every pixel follows the Poisson statistics (variance = mean) in their normal
+    approximation. The noise is seeded with the image number of the session, so a session
+    always produces the same images.
 - **Settable:** exposure, gain, frame rate, binning {1, 2, 4} and ROI. **Not settable:**
   trigger. Exposure and gain do not change the image.
 - **Fixed values:** pixel pitch 5.86 µm, serial `SIM-0001` (or the given serial), index 0.
@@ -408,6 +449,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - `ImgMetaData.dtype`, `ImgMetaData.wall_time_ns()`,
 - `can_set_roi`, `model`, `pixel_format`, `image_size`, `recording_file`,
 - `vendor_options`, `list_devices`, `list_cameras` / `CameraInfo`, `debug_window`,
+- `separate_process` and `process_id` (one process per camera),
 - `store_image_data` as a setting, switchable while recording,
 - the settings JSON in the session comment.
 
@@ -416,8 +458,10 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - **Trigger.** Only a placeholder; the camera always runs in free-run mode.
 - **Exposure timestamp.** The camera's device timestamp (start of exposure) is not recorded
   yet; `time_before_ns` is the arrival at the host.
-- **Logging with several cameras.** C++ messages have no camera reference; with several cameras
-  they go to the most recently created camera's logger.
+- **Logging with several cameras in this process.** With `separate_process=False`, C++ messages
+  have no camera reference; with several cameras they go to the most recently created camera's
+  logger. (In camera processes each camera's messages reach its own logger.)
+- **CPU affinity.** The camera processes are not bound to cores yet; the kernel distributes them.
 - **Pixel pitch.** The HikRobot model table is empty, so `pixel_pitch_um` is `None` until
   entries are added.
 - **Untested on hardware.** No HikRobot camera was available during development. Verify these

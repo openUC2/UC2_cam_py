@@ -31,7 +31,17 @@
 
 - Threading
     - ~~currently "waitForFrame" blocks the caling thread~~ (erledigt: Aufnahme läuft im C++-Thread, Python liest aus dem Ring Buffer)
-    - Pin reading thread to core
+    - ~~Jede Kamera in einem eigenen Prozess~~ (erledigt 2026-10-27: `uc2_cam_worker`, `create_camera(separate_process=True)`, STATUS-Eintrag)
+    - CPU-Affinität je Kamera-Prozess: `create_camera(..., cpu_affinity=None | "auto" | [Kerne])`,
+      `"auto"` verteilt die Kamera-Prozesse reihum auf die Kerne (vor dem Laden des SDK setzen, dann
+      erben alle SDK-Threads sie). **Erst nach einer Messung auf dem Pi 5** - ohne Bindung verteilt
+      der Kernel die Prozesse bereits selbst. Ersetzt den alten Punkt "Pin reading thread to core".
+    - SDK nur noch im Kamera-Prozess laden: `list_cameras()`/`list_devices()` laufen noch im
+      Hauptprozess (dort lädt `_hik` das MVS-SDK). Enumeration in einen kurzlebigen Kamera-Prozess
+      auslagern, dann ist der Hauptprozess SDK-frei.
+    - VS Code "Debug C++": erreicht nur noch die Anwendungsseite; den Kamera-Code nur mit
+      `separate_process=False` oder `gdb -p <process_id>`. Evtl. gdb mit `detach-on-fork off`
+      konfigurieren oder `python -m uc2_cam_py` einen Schalter geben.
 
 - Add Pixel sizes for hik Cam (if not given automatically)
 An der Kamera prüfen: pytest -m hardware und UC2_DISPLAY_SECONDS=30 pytest -m "display and hardware". Das konnte ich hier nicht testen:

@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.15...3.30)
-project(uc2_cam_py LANGUAGES CXX)
+# UC2_CAM_VERSION from the file VERSION, the single source of the version number.
+include("${CMAKE_CURRENT_SOURCE_DIR}/core/cmake/UC2Version.cmake")
+project(uc2_cam_py VERSION ${UC2_CAM_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -81,6 +83,12 @@ if (HIK_BUILD_PYTHON)
     # Install the extension next to the pure-Python package (see wheel.packages,
     # which maps python/uc2_cam_py -> the wheel's uc2_cam_py/ directory).
     install(TARGETS _hik DESTINATION uc2_cam_py)
+
+    # The camera process goes next to it: the package finds it there and starts
+    # one per camera (create_camera(..., separate_process=True)).
+    set_target_properties(uc2_cam_worker PROPERTIES
+        INSTALL_RPATH "$ORIGIN/_mvs/lib/${HIKCAMTEST_MVS_ARCH_DIR}")
+    install(TARGETS uc2_cam_worker DESTINATION uc2_cam_py)
 
     # The SDK runtime goes into the package as uc2_cam_py/_mvs/ (the SDK's own
     # layout), so an installed uc2_cam_py needs neither External/hik nor /opt/MVS.

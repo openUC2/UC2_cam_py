@@ -1,7 +1,8 @@
 """Shared fixtures for the uc2_cam_py test suite.
 
-Most interface tests run against both vendors through the ``camera`` fixture:
-"Simulated" always, "HikRobot" only with a connected camera (marked
+Most interface tests run through the ``camera`` fixture: the simulated camera
+in its own process (the default) and in this process (``separate_process=False``),
+and a HikRobot camera in its own process, only with a connected camera (marked
 ``hardware``, skipped otherwise). Run:
 
     uv run pytest -m "not hardware"          # everything without a camera
@@ -135,7 +136,14 @@ def sim_camera(open_camera) -> uc2_cam_py.Camera:
     return open_camera("Simulated")
 
 
-@pytest.fixture(params=["Simulated", pytest.param("HikRobot", marks=pytest.mark.hardware)])
+@pytest.fixture(
+    params=[
+        pytest.param(("Simulated", True), id="Simulated"),
+        pytest.param(("Simulated", False), id="Simulated-in-process"),
+        pytest.param(("HikRobot", True), id="HikRobot", marks=pytest.mark.hardware),
+    ]
+)
 def camera(request, open_camera) -> Iterator[uc2_cam_py.Camera]:
-    """The interface tests' camera: once simulated, once a real HikRobot camera."""
-    yield open_camera(request.param)
+    """The interface tests' camera: simulated in its own process and in this one, a real HikRobot camera."""
+    vendor, separate = request.param
+    yield open_camera(vendor, separate_process=separate)

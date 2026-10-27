@@ -6,6 +6,7 @@
 
 #include "CameraBase.h"
 #include "SimCamera.h"
+#include "test_image_helpers.h"
 
 #include <chrono>
 #include <filesystem>
@@ -66,22 +67,6 @@ struct TempDir
     }
     ~TempDir() { std::error_code ec; fs::remove_all(path, ec); }
 };
-
-/// Intensity-weighted centroid of a Mono16 image.
-void centroid(const uint16_t* img, int64_t w, int64_t h, double& cx, double& cy)
-{
-    double sum = 0, sx = 0, sy = 0;
-    for (int64_t y = 0; y < h; ++y)
-    {
-        for (int64_t x = 0; x < w; ++x)
-        {
-            const double v = img[y * w + x];
-            sum += v; sx += v * x; sy += v * y;
-        }
-    }
-    cx = sx / sum;
-    cy = sy / sum;
-}
 
 /// Minimal device that delivers exactly what a test pushes.
 class FakeCamera : public CameraBase
@@ -189,11 +174,29 @@ TEST_CASE("readLatest returns the newest frame with its spot in place", "[camera
     CHECK(img.header.width == 400);
 
     double cx = 0, cy = 0;
-    centroid(reinterpret_cast<const uint16_t*>(img.handle.data()), 400, 200, cx, cy);
+    testimg::spotCentroid(reinterpret_cast<const uint16_t*>(img.handle.data()), 400, 200, cx, cy);
     const hik::sim::SpotPosition want = cam->spotPositionFor(img.handle.sequence());
     CHECK(cx == Catch::Approx(want.x).margin(0.5));
     CHECK(cy == Catch::Approx(want.y).margin(0.5));
     CHECK(img.handle.stillValid());
+}
+
+TEST_CASE("the simulated image has an offset with shot noise", "[camera][sim]")
+{
+    auto cam = makeSim();
+    REQUIRE(cam->start());
+    REQUIRE(waitFrames(*cam, 2));
+    cam->stop();
+
+    CameraBase::Image img;
+    REQUIRE(cam->readLatest(img));
+    const hik::sim::SpotPosition c = cam->spotPositionFor(img.handle.sequence());
+    double mean = 0, var = 0;
+    // 50 px are three spot widths (FWHM 16.7 px on this 400 x 200 sensor).
+    testimg::backgroundStats(reinterpret_cast<const uint16_t*>(img.handle.data()), 400, 200,
+                             c.x, c.y, 50.0, mean, var);
+    CHECK(mean == Catch::Approx(5400.0).epsilon(0.01));   // 10 % of the spot height 54 000
+    CHECK(var == Catch::Approx(mean).epsilon(0.05));      // Poisson: variance = mean
 }
 
 TEST_CASE("waitForFrame signals new frames of a running SimCamera", "[camera][sim]")

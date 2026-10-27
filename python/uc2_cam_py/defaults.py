@@ -24,3 +24,6 @@ IMAGE_FILE_PATH: Path = Path.home() / "UC2_recordings"
 
 #: Name of the package logger (used when no logger is passed).
 LOGGER_NAME: str = "uc2_cam_py"
+
+#: Run each camera in a process of its own (``create_camera(separate_process=None)``).
+SEPARATE_PROCESS: bool = True

@@ -12,6 +12,9 @@
 /// cols x rows grid row by row (5 x 4 by default); every grid cell divides the
 /// sensor evenly and the spot sits in its centre, so the expected centroid of
 /// frame k is known exactly and tests can check the image content.
+///
+/// renderSpot() draws the exact spot on a background of 0; renderNoisySpot()
+/// adds a constant offset and shot noise, as SimCamera uses it.
 
 namespace hik {
 namespace sim {
@@ -38,6 +41,15 @@ SpotPosition spotPosition(uint64_t index, uint32_t sensorWidth, uint32_t sensorH
 /// @param depth   sample type of @p dst
 void renderSpot(void* dst, PixelDepth depth, const SensorRoi& roi, uint32_t binning,
                 const SpotPosition& c, double fwhmPx, double peak);
+
+/// Like renderSpot(), on a constant @p offset and with shot noise: each sample
+/// is drawn from N(lambda, lambda) with lambda = offset + spot value, i.e. the
+/// Poisson statistics (variance = mean) in their normal approximation, rounded
+/// and limited to the range of @p depth. The same @p seed gives the same image
+/// (with the same standard library).
+void renderNoisySpot(void* dst, PixelDepth depth, const SensorRoi& roi, uint32_t binning,
+                     const SpotPosition& c, double fwhmPx, double peak, double offset,
+                     uint64_t seed);
 
 } // namespace sim
 } // namespace hik

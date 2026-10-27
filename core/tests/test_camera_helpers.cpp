@@ -6,6 +6,7 @@
 #include "CameraBase.h"
 #include "PixelType.h"
 #include "SimPattern.h"
+#include "test_image_helpers.h"
 
 #include <vector>
 
@@ -178,5 +179,64 @@ TEST_CASE("renderSpot draws the spot at the requested position", "[camera][sim]"
         // binned pixel 60/40 covers sensor pixels 120..121 / 80..81 -> just off the peak
         CHECK(img[40 * 200 + 60] > 230);
         CHECK(img[0] == 0);
+    }
+}
+
+TEST_CASE("renderNoisySpot adds an offset with shot noise", "[camera][sim]")
+{
+    hik::SensorRoi roi;
+    roi.width = 400; roi.height = 200;
+    const hik::sim::SpotPosition c{ 120.0, 80.0 };
+    const hik::sim::SpotPosition far{ -1000.0, -1000.0 };   // no spot in the image
+
+    SECTION("only the offset: mean and variance equal it (Mono16)")
+    {
+        std::vector<uint16_t> img(400 * 200);
+        hik::sim::renderNoisySpot(img.data(), PixelDepth::UInt16, roi, 1, far, 20.0, 0.0, 5400.0, 1);
+        double mean = 0, var = 0;
+        testimg::backgroundStats(img.data(), 400, 200, far.x, far.y, 0.0, mean, var);
+        CHECK(mean == Catch::Approx(5400.0).epsilon(0.002));
+        CHECK(var == Catch::Approx(5400.0).epsilon(0.05));
+    }
+
+    SECTION("only the offset: mean and variance equal it (Mono8)")
+    {
+        std::vector<uint8_t> img(400 * 200);
+        hik::sim::renderNoisySpot(img.data(), PixelDepth::UInt8, roi, 1, far, 20.0, 0.0, 18.0, 1);
+        double mean = 0, var = 0;
+        testimg::backgroundStats(img.data(), 400, 200, far.x, far.y, 0.0, mean, var);
+        CHECK(mean == Catch::Approx(18.0).epsilon(0.01));
+        CHECK(var == Catch::Approx(18.0).epsilon(0.05));
+    }
+
+    SECTION("the spot stays at the requested position")
+    {
+        std::vector<uint16_t> img(400 * 200);
+        hik::sim::renderNoisySpot(img.data(), PixelDepth::UInt16, roi, 1, c, 20.0, 54000.0, 5400.0, 7);
+        double cx = 0, cy = 0;
+        testimg::spotCentroid(img.data(), 400, 200, cx, cy);
+        CHECK(cx == Catch::Approx(120.0).margin(0.1));
+        CHECK(cy == Catch::Approx(80.0).margin(0.1));
+    }
+
+    SECTION("the same seed gives the same image, another seed another one")
+    {
+        std::vector<uint16_t> a(400 * 200), b(400 * 200), d(400 * 200);
+        hik::sim::renderNoisySpot(a.data(), PixelDepth::UInt16, roi, 1, c, 20.0, 54000.0, 5400.0, 3);
+        hik::sim::renderNoisySpot(b.data(), PixelDepth::UInt16, roi, 1, c, 20.0, 54000.0, 5400.0, 3);
+        hik::sim::renderNoisySpot(d.data(), PixelDepth::UInt16, roi, 1, c, 20.0, 54000.0, 5400.0, 4);
+        CHECK(a == b);
+        CHECK(a != d);
+    }
+
+    SECTION("values beyond the range are limited, not wrapped")
+    {
+        std::vector<uint16_t> img16(400 * 200);
+        hik::sim::renderNoisySpot(img16.data(), PixelDepth::UInt16, roi, 1, c, 20.0, 80000.0, 0.0, 1);
+        CHECK(img16[80 * 400 + 120] == 65535);
+        std::vector<uint8_t> img8(400 * 200);
+        hik::sim::renderNoisySpot(img8.data(), PixelDepth::UInt8, roi, 1, c, 20.0, 400.0, 0.0, 1);
+        CHECK(img8[80 * 400 + 120] == 255);
+        CHECK(img8[0] == 0);   // no spot and no offset: nothing to draw from
     }
 }
