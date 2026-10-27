@@ -132,6 +132,7 @@ public:
         uint32_t    slotCount = 16;   ///< number of images the ring holds (>= 2)
         std::string storagePath;      ///< directory for the .uc2rb file; empty = RAM only
         std::string comment;          ///< free text for the session header (<= 8191 chars)
+        bool        sharedMemory = false;  ///< ring in a sealed memfd, for a reader in another process
     };
 
     /// One frame read from the ring: the pinned slot plus the ring it lives in.
@@ -246,6 +247,8 @@ public:
     bool sessionHeader(UC2_SessionHeader& out) const;
     /// @return path of the current .uc2rb file (empty if not streaming).
     std::string recordingFile() const;
+    /// Disk-stream counters of the current ring (all zero before the first start()).
+    void streamStats(uint64_t& saved, uint64_t& dropped, bool& error) const;
     /// @return frames the device delivered but that could not be stored
     ///         (size mismatch, ring busy) since the last start().
     uint64_t framesRejected() const { return m_rejected.load(); }

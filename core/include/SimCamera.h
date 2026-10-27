@@ -34,6 +34,10 @@ public:
 
     static const char* const kModel;   ///< "UC2-SIM"
 
+    /// PFNC code of the pixel format called @p name ("Mono8" or "Mono16").
+    /// @return false for any other name.
+    static bool pixelFormatByName(const std::string& name, int64_t& pfncCode);
+
     explicit SimCamera(const Options& opt);
     ~SimCamera() override;
 

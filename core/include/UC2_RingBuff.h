@@ -17,10 +17,10 @@
 /// ## Design contract
 ///
 /// The buffer keeps its entire state in one contiguous memory region so that the
-/// very same layout can later be mapped into several processes (camera process
-/// writes, streaming process saves, analysis process reads). Three rules make
-/// that possible and are honoured throughout, even though the only allocator
-/// shipped today is a plain heap one:
+/// very same layout can be mapped into several processes (camera process writes
+/// and saves, the application process reads). Config::sharedMemory puts the
+/// region into a sealed memfd, RingBuffer::attach() maps it in the reading
+/// process. Three rules make that possible and are honoured throughout:
 ///
 ///  1. **No pointers inside the region.** Everything is a byte offset from the
 ///     region base; a pointer stored by one process is meaningless in another,
@@ -48,9 +48,18 @@
 /// consumer can never corrupt the buffer. Each slot carries a seqlock counter
 /// (even = stable, odd = a write is in progress); a reader samples it before and
 /// after use and rejects the frame if the producer recycled the slot underneath
-/// it (RingBuffer::ReadHandle::stillValid()). The mutex and condition variable
-/// live *outside* the region and serve only to avoid spinning -- replacing them
-/// with process-shared pthread primitives later does not touch the protocol.
+/// it (RingBuffer::ReadHandle::stillValid()). Readers waiting for the next frame
+/// sleep on a futex word inside the region, which works across processes and
+/// involves no lock a crashed process could leave held. The mutex and condition
+/// variable outside the region only pace the producer in FullPolicy::Wait.
+///
+/// ## Reading another process's region
+///
+/// An attached reader trusts nothing in the shared region that determines an
+/// address: attach() validates a private copy of the header once, and every
+/// payload address and image geometry is computed from that copy. A producer
+/// that scribbles over the region can make the reader see wrong pixels, never
+/// read outside the mapping.
 
 namespace hik {
 
@@ -104,7 +113,8 @@ static const size_t kCacheLine = 64;
 
 /// Version of the shared-memory layout. Bumped on any incompatible change to
 /// UC2_SessionHeader, UC2_Control or UC2_SlotRecord.
-static const uint32_t kLayoutVersion = 1;
+/// 2: UC2_Control carries the futex word for waitForFrame().
+static const uint32_t kLayoutVersion = 2;
 
 /// Version of the on-disk container format.
 static const uint32_t kFormatVersion = 1;
@@ -174,7 +184,8 @@ struct UC2_SlotRecord
     std::atomic<uint64_t> nbytes;      ///< valid payload bytes
     std::atomic<int64_t>  tsBeforeNs;  ///< monotonic ns before the read
     std::atomic<int64_t>  tsAfterNs;   ///< monotonic ns after the read
-    uint64_t              payloadOffset;  ///< byte offset of the payload from the region base
+    uint64_t              payloadOffset;  ///< byte offset of the payload from the region base (informational:
+                                          ///< readers compute it from their own validated layout)
     uint8_t               reserved1[8];
 };
 
@@ -198,8 +209,9 @@ struct UC2_Control
     std::atomic<uint64_t> aborted;         ///< writes abandoned via abortWrite()
     std::atomic<uint64_t> rejectedReads;   ///< reads rejected by the seqlock
     std::atomic<uint32_t> recording;       ///< non-zero between start/stopRecording()
-    uint32_t              reserved0;
-    uint8_t               pad0[kCacheLine - 56];
+    std::atomic<uint32_t> frameSignal;     ///< futex word, bumped on every commit
+    std::atomic<uint32_t> frameWaiters;    ///< readers sleeping on frameSignal
+    uint8_t               pad0[kCacheLine - 60];
     UC2_Consumer          consumers[kMaxConsumers];
 };
 
@@ -251,8 +263,8 @@ typedef void  (*UC2_DestroyFn)(void* ctx);
 
 /// Where the ring buffer's memory region comes from.
 ///
-/// The shipped implementation is heapMemoryOps(); an `shm_open` + `mmap`
-/// variant slots in here unchanged when the buffer moves across processes.
+/// The default is heapMemoryOps(); Config::sharedMemory selects the built-in
+/// memfd provider instead, which another process can attach() to.
 struct UC2_MemoryOps
 {
     uint32_t      abiVersion;  ///< must be kAbiVersion
@@ -341,6 +353,7 @@ public:
         std::string comment;                          ///< free text stored in the session header
         FullPolicy  policy        = FullPolicy::Overwrite;  ///< behaviour when the next slot is unread
         uint32_t    waitTimeoutMs = 1000;             ///< Wait-mode gate timeout before overwriting anyway
+        bool        sharedMemory  = false;            ///< region in a sealed memfd that another process can attach() to (Linux)
     };
 
     /// Producer-side claim on one slot.
@@ -439,6 +452,26 @@ public:
     explicit RingBuffer(const Config& cfg);
     ~RingBuffer();
 
+    /// Map the region of a ring created with Config::sharedMemory -- usually in
+    /// another process, which received @p fd over a Unix socket -- for reading.
+    ///
+    /// The region is accepted only if it is sealed against resizing (so it can
+    /// never shrink under the reader, which would raise SIGBUS) and its header
+    /// describes exactly the mapped size. The result can only be read: writing,
+    /// recording, streaming and registering consumers are refused. The mapping
+    /// lives as long as the returned object, independent of the producer.
+    /// @param fd memfd of the region; not taken over, the caller still closes it.
+    /// @return the attached ring, or nullptr (and logged) if the region is not
+    ///         a valid ring.
+    static std::shared_ptr<RingBuffer> attach(int fd);
+
+    /// @return true for a ring obtained from attach().
+    bool isAttached() const { return m_attached; }
+
+    /// @return the memfd of a configured Config::sharedMemory ring, to hand to a
+    ///         reader; -1 for heap or attached rings. Owned by the ring.
+    int sharedFd() const;
+
     RingBuffer(const RingBuffer&)            = delete;
     RingBuffer& operator=(const RingBuffer&) = delete;
     RingBuffer(RingBuffer&&)                 = delete;
@@ -458,7 +491,8 @@ public:
 
     /// Install a custom memory provider. Must be called before configure();
     /// the default is heapMemoryOps().
-    /// @return false if the ops are incomplete or the buffer is already configured.
+    /// @return false if the ops are incomplete, the buffer is already configured
+    ///         or Config::sharedMemory chose the memfd provider.
     bool setMemoryOps(const UC2_MemoryOps& ops);
 
     /// Validate the geometry, allocate the region and lay out the slots. Also
@@ -544,7 +578,8 @@ public:
     bool readLatest(ReadHandle& out, uint32_t consumer = kAnonymousConsumer);
 
     /// Block until a frame newer than @p afterSequence has been committed, so a
-    /// reader can react to each new frame instead of polling readLatest().
+    /// reader can react to each new frame instead of polling readLatest(). Also
+    /// works on an attached ring, woken by the producer in the other process.
     /// @param afterSequence sequence of the newest frame the caller has seen,
     ///                      or -1 to wait for any frame.
     /// @param timeoutMs     upper bound for the wait; 0 only checks.
@@ -627,8 +662,10 @@ private:
 
     UC2_SlotRecord*       slotAt(uint32_t index);
     const UC2_SlotRecord* slotAt(uint32_t index) const;
-    uint8_t*              payloadAt(const UC2_SlotRecord& rec);
-    const uint8_t*        payloadAt(const UC2_SlotRecord& rec) const;
+    /// Payload of slot @p index, computed from this object's own layout, never
+    /// from UC2_SlotRecord::payloadOffset (another process may have written it).
+    uint8_t*              payloadAt(uint32_t index);
+    const uint8_t*        payloadAt(uint32_t index) const;
 
     /// Fill @p out from slot @p index under the seqlock. @return true on success.
     bool acquireSlot(uint32_t index, const uint64_t* wantSequence,
@@ -665,6 +702,9 @@ private:
     uint64_t                 m_slotsOffset   = 0;
     uint64_t                 m_payloadOffset = 0;
     uint64_t                 m_slotStride    = 0;
+    uint64_t                 m_frameBytes    = 0;      ///< own copy; the header field is shared
+    bool                     m_attached      = false;  ///< mapped by attach(): read-only role
+    int                      m_shmFd         = -1;     ///< memfd of a Config::sharedMemory region
 
     UC2_SessionHeader*       m_header  = nullptr;      ///< inside the region
     UC2_Control*             m_control = nullptr;      ///< inside the region
@@ -680,12 +720,11 @@ private:
     bool                     m_configured = false;
     std::atomic<bool>        m_writeBusy;              ///< catches a second concurrent producer
 
-    // Outside the region on purpose: a wake-up aid only, never the source of
-    // correctness. Swapping these for process-shared pthread primitives later
-    // leaves the protocol untouched.
+    // Outside the region on purpose: a wake-up aid for the Wait-mode producer
+    // only, never the source of correctness. Readers waiting for frames use the
+    // futex word UC2_Control::frameSignal instead, which works across processes.
     mutable std::mutex       m_mtx;
     std::condition_variable  m_slotFreed;   ///< a consumer released or acked a slot
-    std::condition_variable  m_frameReady;  ///< a frame was committed
 
     std::vector<UC2_SinkOps> m_sinks;
 

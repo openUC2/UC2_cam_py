@@ -82,6 +82,12 @@ if (HIK_BUILD_PYTHON)
     # which maps python/uc2_cam_py -> the wheel's uc2_cam_py/ directory).
     install(TARGETS _hik DESTINATION uc2_cam_py)
 
+    # The camera process goes next to it: the package finds it there and starts
+    # one per camera (create_camera(..., separate_process=True)).
+    set_target_properties(uc2_cam_worker PROPERTIES
+        INSTALL_RPATH "$ORIGIN/_mvs/lib/${HIKCAMTEST_MVS_ARCH_DIR}")
+    install(TARGETS uc2_cam_worker DESTINATION uc2_cam_py)
+
     # The SDK runtime goes into the package as uc2_cam_py/_mvs/ (the SDK's own
     # layout), so an installed uc2_cam_py needs neither External/hik nor /opt/MVS.
     # A wheel cannot hold symlinks: each one is installed as a copy under its own

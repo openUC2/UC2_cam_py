@@ -48,7 +48,8 @@ def run_connection_test(index: int = -1, frames: int = 0, snapshot: str = "", di
 # --- Logging -----------------------------------------------------------------
 
 def _set_log_forwarding(on: bool) -> None: ...
-def _pop_log(timeout_ms: int = 200, max_items: int = 256) -> list[tuple[int, str]]: ...
+def _pop_log(timeout_ms: int = 200, max_items: int = 256) -> list[tuple[int, str, int]]:
+    """(level, message, source); source is a RemoteCamera's log_source, 0 for this process."""
 def _wake_log() -> None: ...
 def _log_dropped() -> int: ...
 def _set_log_level(level: int) -> None: ...
@@ -78,8 +79,8 @@ class ImageHandle:
 
 # --- Cameras -----------------------------------------------------------------
 
-class CameraBase:
-    """Vendor-neutral camera core. Units: ms, fps, dB, unbinned sensor pixels."""
+class _CameraApi:
+    """The calls CameraBase and RemoteCamera share (exists in this stub only)."""
 
     @property
     def vendor(self) -> str: ...
@@ -145,6 +146,9 @@ class CameraBase:
     def frames_rejected(self) -> int: ...
     def stream_stats(self) -> tuple[int, int, bool]: ...
 
+class CameraBase(_CameraApi):
+    """Vendor-neutral camera core. Units: ms, fps, dB, unbinned sensor pixels."""
+
 class HikCamera(CameraBase):
     """HikRobot (MVS) camera."""
 
@@ -163,6 +167,35 @@ class SimCamera(CameraBase):
         frame_rate: float = 10.0,
     ) -> None: ...
     def spot_position(self, sequence: int) -> tuple[float, float]: ...
+    def exposure_auto(self) -> bool: ...
+    def gain_auto(self) -> bool: ...
+
+class RemoteCamera(_CameraApi):
+    """Camera in its own process (uc2_cam_worker); frames are read from shared memory.
+
+    Not a CameraBase at runtime, but it offers the same calls.
+    """
+
+    def __init__(
+        self,
+        worker_path: str,
+        vendor: str,
+        connection_type: str = "",
+        serial: str = "",
+        index: int = -1,
+        options: dict[str, str] = ...,
+    ) -> None: ...
+    @property
+    def pid(self) -> int:
+        """Process id of the camera process."""
+    @property
+    def is_lost(self) -> bool:
+        """True once the camera process died or stopped answering."""
+    @property
+    def log_source(self) -> int:
+        """Source tag of this camera's log messages."""
+    def spot_position(self, sequence: int) -> tuple[float, float] | None:
+        """Expected spot centre of frame `sequence` (Simulated only)."""
     def exposure_auto(self) -> bool: ...
     def gain_auto(self) -> bool: ...
 

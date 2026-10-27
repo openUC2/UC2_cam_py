@@ -6,8 +6,10 @@ the GIL) and calls the active logger *with* the GIL - so a busy Python thread
 can never stall the camera thread, and no lock-order deadlock between the GIL
 and C++ mutexes is possible.
 
-C++ messages carry no camera reference. They go to the logger of the most
-recently created camera, or to the package logger ``uc2_cam_py``.
+Messages of a camera process (``separate_process=True``) carry the source tag
+of their camera and go to that camera's logger. Messages of the C++ core in this
+process carry no camera reference: they go to the logger of the most recently
+created camera, or to the package logger ``uc2_cam_py``.
 """
 
 from __future__ import annotations
@@ -76,6 +78,7 @@ def package_logger() -> LoggerAdapter:
 
 _lock = threading.Lock()
 _active: LoggerAdapter | None = None
+_sources: dict[int, LoggerAdapter] = {}
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _flush_ids = itertools.count()
@@ -95,22 +98,42 @@ def active_logger() -> LoggerAdapter:
         return _active if _active is not None else package_logger()
 
 
-def _dispatch(level: int, message: str) -> None:
+def register_source(source: int, adapter: LoggerAdapter) -> None:
+    """Route C++ messages tagged ``source`` (one camera process) to ``adapter``."""
+    with _lock:
+        _sources[source] = adapter
+
+
+def unregister_source(source: int) -> None:
+    """Forget ``source``; its late messages go to the active logger again."""
+    with _lock:
+        _sources.pop(source, None)
+
+
+def _target(source: int) -> LoggerAdapter:
+    with _lock:
+        adapter = _sources.get(source) if source else None
+        if adapter is None:
+            adapter = _active
+    return adapter if adapter is not None else package_logger()
+
+
+def _dispatch(level: int, message: str, source: int = 0) -> None:
     if message.startswith(_FLUSH_PREFIX):
         with _flush_cv:
             _flush_seen.add(int(message[len(_FLUSH_PREFIX):]))
             _flush_cv.notify_all()
         return
     try:
-        active_logger().log(level, message)
+        _target(source).log(level, message)
     except Exception:  # a broken user logger must not kill the forwarder
         logging.getLogger(defaults.LOGGER_NAME).exception("logger raised while forwarding a C++ message")
 
 
 def _run() -> None:
     while not _stop.is_set():
-        for level, message in _hik._pop_log(200, 256):
-            _dispatch(level, message)
+        for level, message, source in _hik._pop_log(200, 256):
+            _dispatch(level, message, source)
         dropped = _hik._log_dropped()
         if dropped:
             active_logger().warning(f"{dropped} C++ log message(s) dropped (queue full)")
@@ -137,8 +160,8 @@ def stop() -> None:
     _thread.join(timeout=2.0)
     _thread = None
     _hik._set_log_forwarding(False)
-    for level, message in _hik._pop_log(0, 1_000_000):
-        _dispatch(level, message)
+    for level, message, source in _hik._pop_log(0, 1_000_000):
+        _dispatch(level, message, source)
 
 
 def flush(timeout: float = 2.0) -> bool:

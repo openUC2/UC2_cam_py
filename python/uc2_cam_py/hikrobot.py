@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import _hik
+from . import _hik, _process
 from .camera import Camera, CameraInfo, register_vendor
 
 #: Static data per camera model, for what the firmware does not report.
@@ -26,10 +26,18 @@ class HikRobotCamera(Camera):
 
     @classmethod
     def _create_backend(
-        cls, connection_type: str | None, serial: str | None, index: int | None, **options: Any
+        cls,
+        connection_type: str | None,
+        serial: str | None,
+        index: int | None,
+        *,
+        separate_process: bool,
+        **options: Any,
     ) -> Any:
         if options:
             raise TypeError(f"unexpected options for {cls.VENDOR}: {', '.join(sorted(options))}")
+        if separate_process:
+            return _process.open_camera(cls.VENDOR, connection_type, serial, index, {})
         return _hik.HikCamera(connection_type or "", serial or "", -1 if index is None else index)
 
     @classmethod

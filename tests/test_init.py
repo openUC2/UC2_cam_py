@@ -39,6 +39,10 @@ def test_serial_and_index_select_the_camera(open_camera) -> None:
         (dict(start_on_init=1), TypeError),
         (dict(store_image_data="yes"), TypeError),
         (dict(debug_window="yes"), TypeError),
+        (dict(separate_process=1), TypeError),
+        (dict(sensor_width="400"), TypeError),   # vendor options are type-checked for both paths
+        (dict(frame_rate=True), TypeError),
+        (dict(pixel_format="Mono12"), ValueError),
         (dict(image_file_path=42), TypeError),
         (dict(logger=object()), TypeError),
         (dict(colour="red"), TypeError),       # unknown vendor option

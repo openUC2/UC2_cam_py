@@ -23,6 +23,13 @@ const double kMaxGainDb  = 24.0;
 
 const char* const SimCamera::kModel = "UC2-SIM";
 
+bool SimCamera::pixelFormatByName(const std::string& name, int64_t& pfncCode)
+{
+    if (name == "Mono8")  { pfncCode = pfnc::Mono8;  return true; }
+    if (name == "Mono16") { pfncCode = pfnc::Mono16; return true; }
+    return false;
+}
+
 SimCamera::SimCamera(const Options& opt)
     : CameraBase("Simulated", kModel, opt.serial, opt.connectionType, 0)
     , m_opt(opt)

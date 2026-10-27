@@ -52,6 +52,26 @@ def test_the_sdk_comes_from_the_package_not_from_an_installation() -> None:
     assert os.environ["ALLUSERSPROFILE"].endswith("uc2_cam_py")    # GenICam cache not in /opt/MVS
 
 
+def test_the_camera_process_loads_the_sdk_of_the_package_too(tmp_path) -> None:
+    """The camera process (separate_process=True) uses the same SDK copy, never /opt/MVS."""
+    from pathlib import Path
+
+    from uc2_cam_py import _hik
+
+    root = Path(_hik.sdk_path())
+    with uc2_cam_py.create_camera(
+        vendor="Simulated", store_image_data=False, image_file_path=tmp_path, sensor_width=400, sensor_height=200
+    ) as cam:
+        assert cam.process_id is not None
+        with open(f"/proc/{cam.process_id}/maps") as maps:
+            files = {line.split()[-1] for line in maps if "/" in line}
+        with open(f"/proc/{cam.process_id}/environ", "rb") as env:
+            environ = env.read().split(b"\0")
+    assert not [f for f in files if f.startswith("/opt/MVS")]
+    assert any(f.startswith(str(root)) for f in files)
+    assert any(e.startswith(b"ALLUSERSPROFILE=") and e.endswith(b"uc2_cam_py") for e in environ)
+
+
 @pytest.mark.hardware
 def test_run_connection_test() -> None:
     """End-to-end connection test on the first device. Skipped without hardware."""

@@ -301,10 +301,11 @@ bool CameraBase::startLocked()
     }
 
     RingBuffer::Config rc;
-    rc.storagePath = m_cfg.storagePath;
-    rc.slotCount   = m_cfg.slotCount;
-    rc.comment     = m_cfg.comment;
-    rc.policy      = FullPolicy::Overwrite;
+    rc.storagePath  = m_cfg.storagePath;
+    rc.slotCount    = m_cfg.slotCount;
+    rc.comment      = m_cfg.comment;
+    rc.policy       = FullPolicy::Overwrite;
+    rc.sharedMemory = m_cfg.sharedMemory;
 
     auto ring = std::make_shared<RingBuffer>(rc);
     ring->setImageSize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
@@ -517,6 +518,14 @@ std::string CameraBase::recordingFile() const
 {
     std::shared_ptr<RingBuffer> r = ring();
     return r ? r->streamFilePath() : std::string();
+}
+
+void CameraBase::streamStats(uint64_t& saved, uint64_t& dropped, bool& error) const
+{
+    std::shared_ptr<RingBuffer> r = ring();
+    saved   = r ? r->streamFramesSaved() : 0;
+    dropped = r ? r->streamFramesDropped() : 0;
+    error   = r ? r->streamHasError() : false;
 }
 
 } // namespace hik

@@ -121,6 +121,10 @@ class Camera:
         self._backend = backend
         self._log = logger
         self._closed = False
+        # A camera process tags its log messages; they go to this camera's logger.
+        self._log_source = int(getattr(backend, "log_source", 0))
+        if self._log_source:
+            _logging.register_source(self._log_source, logger)
         self._debug_window: _preview.DebugWindow | None = None
         self._buffer_size = int(buffer_size)
         self._store_image_data = bool(store_image_data)
@@ -134,6 +138,7 @@ class Camera:
             sensor = None if info is None else info.get("pixel_count")
         if sensor is None:
             self._backend.close()
+            self._forget_log_source()
             message = (
                 f"{self.VENDOR} {backend.model}: the pixel count cannot be read from the firmware "
                 f"and is not coded in the camera class - add the model to its model table"
@@ -146,6 +151,7 @@ class Camera:
             self._check_resources(log_disk_estimate=True)
         except Exception:
             self._backend.close()
+            self._forget_log_source()
             raise
         self._log_init_info()
         if start_on_init:
@@ -160,8 +166,15 @@ class Camera:
 
     @classmethod
     def _create_backend(
-        cls, connection_type: str | None, serial: str | None, index: int | None, **options: Any
+        cls,
+        connection_type: str | None,
+        serial: str | None,
+        index: int | None,
+        *,
+        separate_process: bool,
+        **options: Any,
     ) -> Any:
+        """Open the device: in a camera process of its own, or in this process."""
         raise NotImplementedError
 
     @classmethod
@@ -263,9 +276,17 @@ class Camera:
                 f"({free / 2**30:.1f} GiB free)"
             )
 
+    def _forget_log_source(self) -> None:
+        if self._log_source:
+            _logging.flush()   # the camera process's last messages still go to our logger
+            _logging.unregister_source(self._log_source)
+            self._log_source = 0
+
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("the camera has been closed")
+        if getattr(self._backend, "is_lost", False):
+            raise RuntimeError("the camera process has ended - the camera is no longer available (see log)")
 
     # ------------------------------------------------------------- properties
 
@@ -373,6 +394,13 @@ class Camera:
     def buffer_size(self) -> int:
         """int: Number of slots in the image buffer."""
         return self._buffer_size
+
+    @property
+    def process_id(self) -> int | None:
+        """int | None: Process id of the camera process (``separate_process=True``), None if
+        the camera runs in this process."""
+        pid = getattr(self._backend, "pid", None)
+        return None if pid is None else int(pid)
 
     @property
     def is_recording(self) -> bool:
@@ -745,6 +773,7 @@ class Camera:
         self._backend.close()
         self._closed = True
         _logging.flush()   # the core's shutdown messages first, then ours
+        self._forget_log_source()
         self._log.info(f"Camera closed: {self.VENDOR} {self.serial}")
         if _logging.active_logger() is self._log:
             _logging.set_active_logger(None)
@@ -773,6 +802,7 @@ def create_camera(
     store_image_data: bool = True,
     logger: Any = None,
     debug_window: bool = False,
+    separate_process: bool | None = None,
     **vendor_options: Any,
 ) -> Camera:
     """Open a camera and return it as a :class:`Camera`.
@@ -796,6 +826,12 @@ def create_camera(
         debug_window: Show the newest image in a window until the camera is
             closed - the only way to open one. Without X11 an error is logged
             and the camera works without the window.
+        separate_process: Run the camera - device, acquisition and recording
+            to disk - in a process of its own (Linux), so several cameras are
+            spread over the CPU cores without further ado and a crashing camera
+            SDK cannot take this process down. Images are still read zero-copy
+            (shared memory). False runs it in this process (e.g. for a debugger);
+            None -> ``defaults.SEPARATE_PROCESS`` (True).
         **vendor_options: Vendor-specific extras (Simulated: ``pixel_format``,
             ``sensor_width``, ``sensor_height``, ``frame_rate``).
 
@@ -834,6 +870,7 @@ def create_camera(
         raise ValueError("give either serial or index, not both")
 
     buffer_size = defaults.BUFFER_SIZE if buffer_size is None else buffer_size
+    separate_process = defaults.SEPARATE_PROCESS if separate_process is None else separate_process
     if not _is_int(buffer_size):
         raise TypeError("buffer_size must be an int")
     if buffer_size < 2:
@@ -842,6 +879,7 @@ def create_camera(
         ("start_on_init", start_on_init),
         ("store_image_data", store_image_data),
         ("debug_window", debug_window),
+        ("separate_process", separate_process),
     ):
         if not isinstance(flag, bool):
             raise TypeError(f"{name} must be a bool")
@@ -851,7 +889,9 @@ def create_camera(
     adapter = _logging.package_logger() if logger is None else _logging.LoggerAdapter(logger)
     _logging.set_active_logger(adapter)
     try:
-        backend = cls._create_backend(connection_type, serial, index, **vendor_options)
+        backend = cls._create_backend(
+            connection_type, serial, index, separate_process=separate_process, **vendor_options
+        )
     except Exception as exc:
         _logging.flush()
         adapter.error(f"Opening a {cls.VENDOR} camera failed: {exc}")

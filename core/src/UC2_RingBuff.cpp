@@ -3,8 +3,15 @@
 #include "hikLog.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -34,9 +41,12 @@ static_assert(sizeof(UC2_SlotRecord)    == 64,  "slot record must stay one cache
 static_assert(sizeof(UC2_Consumer)      == 64,  "consumer record must stay one cache line");
 static_assert(std::is_standard_layout<UC2_SessionHeader>::value, "header must be standard layout");
 static_assert(std::is_standard_layout<UC2_SlotRecord>::value,    "slot record must be standard layout");
+static_assert(sizeof(UC2_Control) == kCacheLine * (1 + kMaxConsumers), "control block must stay 576 bytes");
 static_assert(std::is_standard_layout<UC2_Control>::value,       "control block must be standard layout");
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "32-bit atomics must be lock-free");
 static_assert(std::atomic<uint64_t>::is_always_lock_free, "64-bit atomics must be lock-free");
+// The futex syscall operates on a plain 32-bit word at the atomic's address.
+static_assert(sizeof(std::atomic<uint32_t>) == sizeof(uint32_t), "futex word must be a bare uint32_t");
 
 namespace {
 
@@ -64,6 +74,97 @@ bool mulChecked(uint64_t a, uint64_t b, uint64_t& out)
     }
     out = a * b;
     return true;
+}
+
+/// Byte layout of a region, derived from the geometry alone: the producer's
+/// configure() and a reader's attach() run the very same arithmetic.
+struct RegionLayout
+{
+    uint64_t frameBytes    = 0;
+    uint64_t slotStride    = 0;
+    uint64_t controlOffset = 0;
+    uint64_t slotsOffset   = 0;
+    uint64_t payloadOffset = 0;
+    uint64_t regionBytes   = 0;
+};
+
+/// Lay out a region for @p slotCount frames of the given geometry, with every
+/// multiplication checked: a bad ROI must fail loudly rather than wrap around
+/// into a tiny allocation.
+/// @return false, with the reason in @p why, on overflow or above kMaxRegionBytes.
+bool computeLayout(uint32_t width, uint32_t height, uint32_t channels, PixelDepth depth,
+                   uint32_t slotCount, RegionLayout& out, std::string& why)
+{
+    uint64_t frameBytes = 0;
+    if (!mulChecked(width, height, frameBytes)
+        || !mulChecked(frameBytes, channels, frameBytes)
+        || !mulChecked(frameBytes, itemSize(depth), frameBytes))
+    {
+        why = "frame size overflows 64 bits";
+        return false;
+    }
+
+    const uint64_t slotStride    = alignUp(frameBytes, kCacheLine);
+    const uint64_t headerBytes   = alignUp(sizeof(UC2_SessionHeader), kCacheLine);
+    const uint64_t controlBytes  = alignUp(sizeof(UC2_Control), kCacheLine);
+    const uint64_t slotTableSize = alignUp(
+        static_cast<uint64_t>(slotCount) * sizeof(UC2_SlotRecord), kCacheLine);
+
+    uint64_t payloadBytes = 0;
+    if (!mulChecked(slotStride, slotCount, payloadBytes))
+    {
+        why = "payload area overflows 64 bits";
+        return false;
+    }
+
+    out.frameBytes    = frameBytes;
+    out.slotStride    = slotStride;
+    out.controlOffset = headerBytes;
+    out.slotsOffset   = out.controlOffset + controlBytes;
+    out.payloadOffset = out.slotsOffset + slotTableSize;
+    out.regionBytes   = out.payloadOffset + payloadBytes;
+
+    if (out.regionBytes > kMaxRegionBytes)
+    {
+        why = "region of " + std::to_string(out.regionBytes / (1024 * 1024)) + " MiB exceeds the "
+            + std::to_string(kMaxRegionBytes / (1024 * 1024)) + " MiB limit";
+        return false;
+    }
+    return true;
+}
+
+/// @return true if @p d is one of the PixelDepth enumerators.
+bool validDepth(uint8_t d)
+{
+    return d == static_cast<uint8_t>(PixelDepth::UInt8) || d == static_cast<uint8_t>(PixelDepth::UInt16)
+        || d == static_cast<uint8_t>(PixelDepth::Float64);
+}
+
+/// Sleep until @p word no longer holds @p expected, a wake-up arrives or
+/// @p timeoutNs pass. Spurious returns are fine: the caller re-checks.
+void futexWait(std::atomic<uint32_t>& word, uint32_t expected, int64_t timeoutNs)
+{
+#if defined(__linux__)
+    struct timespec ts;
+    ts.tv_sec  = static_cast<time_t>(timeoutNs / 1000000000ll);
+    ts.tv_nsec = static_cast<long>(timeoutNs % 1000000000ll);
+    // Not FUTEX_PRIVATE_FLAG: the word may live in a region shared with another process.
+    ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAIT, expected, &ts, nullptr, 0);
+#else
+    (void)word;
+    (void)expected;
+    std::this_thread::sleep_for(std::chrono::nanoseconds(std::min<int64_t>(timeoutNs, 1000000)));
+#endif
+}
+
+/// Wake every thread sleeping in futexWait() on @p word, in any process.
+void futexWakeAll(std::atomic<uint32_t>& word)
+{
+#if defined(__linux__)
+    ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE, INT32_MAX, nullptr, nullptr, 0);
+#else
+    (void)word;   // waiters poll
+#endif
 }
 
 /// Copy @p src into the fixed-size field @p dst, always NUL-terminating.
@@ -172,7 +273,79 @@ void heapRelease(void* /*ctx*/, void* base, size_t /*bytes*/)
     ::free(base);
 }
 
+// Shared-memory provider. ctx points at RingBuffer::m_shmFd, which receives the
+// memfd so the ring can hand it to a reader process.
+void* shmAcquire(void* ctx, size_t bytes, size_t /*alignment: mmap is page-aligned*/)
+{
+#if defined(__linux__)
+    int* fdOut = static_cast<int*>(ctx);
+    const int fd = ::memfd_create("uc2_ring", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    if (fd < 0)
+    {
+        ERR("RingBuffer: memfd_create failed: " + std::string(std::strerror(errno)));
+        return nullptr;
+    }
+    // fallocate, not just ftruncate: the pages are reserved now, so running out
+    // of memory fails here instead of as SIGBUS on a later page fault.
+    int rc = 0;
+    do
+    {
+        rc = ::fallocate(fd, 0, 0, static_cast<off_t>(bytes));
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0)
+    {
+        ERR("RingBuffer: cannot reserve " + std::to_string(bytes / (1024 * 1024))
+            + " MiB of shared memory: " + std::strerror(errno));
+        ::close(fd);
+        return nullptr;
+    }
+    // Sealed against resizing: no process can shrink the region under a reader
+    // that has it mapped (an access beyond the end of a file raises SIGBUS).
+    if (::fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL) != 0)
+    {
+        ERR("RingBuffer: cannot seal the shared memory: " + std::string(std::strerror(errno)));
+        ::close(fd);
+        return nullptr;
+    }
+    void* base = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED)
+    {
+        ERR("RingBuffer: cannot map the shared memory: " + std::string(std::strerror(errno)));
+        ::close(fd);
+        return nullptr;
+    }
+    *fdOut = fd;
+    return base;
+#else
+    (void)ctx;
+    (void)bytes;
+    ERR("RingBuffer: shared memory is only available on Linux");
+    return nullptr;
+#endif
+}
+
+void shmRelease(void* ctx, void* base, size_t bytes)
+{
+    ::munmap(base, bytes);
+    int* fd = static_cast<int*>(ctx);
+    if (fd != nullptr && *fd >= 0)
+    {
+        ::close(*fd);
+        *fd = -1;
+    }
+}
+
 } // extern "C"
+
+UC2_MemoryOps sharedMemoryOps(int* fdOut)
+{
+    UC2_MemoryOps ops;
+    ops.abiVersion = kAbiVersion;
+    ops.ctx        = fdOut;
+    ops.acquire    = &shmAcquire;
+    ops.release    = &shmRelease;
+    return ops;
+}
 
 } // namespace
 
@@ -350,7 +523,7 @@ void RingBuffer::ReadHandle::release(bool markRead, bool markSaved)
 
 RingBuffer::RingBuffer(const Config& cfg)
     : m_cfg(cfg)
-    , m_mem(heapMemoryOps())
+    , m_mem(cfg.sharedMemory ? sharedMemoryOps(&m_shmFd) : heapMemoryOps())
     , m_comment(cfg.comment)
     , m_writeBusy(false)
     , m_streamDir(cfg.storagePath)
@@ -456,6 +629,11 @@ bool RingBuffer::setMemoryOps(const UC2_MemoryOps& ops)
         ERR("RingBuffer::setMemoryOps: buffer is already configured");
         return false;
     }
+    if (m_cfg.sharedMemory)
+    {
+        ERR("RingBuffer::setMemoryOps: Config::sharedMemory already selects the memfd provider");
+        return false;
+    }
     if (ops.abiVersion != kAbiVersion)
     {
         ERR("RingBuffer::setMemoryOps: ABI version mismatch (got "
@@ -489,42 +667,18 @@ bool RingBuffer::configure()
         return false;
     }
 
-    // Frame geometry, with every multiplication checked: a bad ROI must fail
-    // loudly here rather than wrap around into a tiny allocation.
-    uint64_t frameBytes = 0;
-    if (!mulChecked(m_width, m_height, frameBytes)
-        || !mulChecked(frameBytes, m_channels, frameBytes)
-        || !mulChecked(frameBytes, itemSize(m_depth), frameBytes))
+    RegionLayout lay;
+    std::string  why;
+    if (!computeLayout(m_width, m_height, m_channels, m_depth, m_cfg.slotCount, lay, why))
     {
-        ERR("RingBuffer::configure: frame size overflows 64 bits");
+        ERR("RingBuffer::configure: " + why);
         return false;
     }
-
-    const uint64_t slotStride    = alignUp(frameBytes, kCacheLine);
-    const uint64_t headerBytes   = alignUp(sizeof(UC2_SessionHeader), kCacheLine);
-    const uint64_t controlBytes  = alignUp(sizeof(UC2_Control), kCacheLine);
-    const uint64_t slotTableSize = alignUp(
-        static_cast<uint64_t>(m_cfg.slotCount) * sizeof(UC2_SlotRecord), kCacheLine);
-
-    uint64_t payloadBytes = 0;
-    if (!mulChecked(slotStride, m_cfg.slotCount, payloadBytes))
-    {
-        ERR("RingBuffer::configure: payload area overflows 64 bits");
-        return false;
-    }
-
-    const uint64_t controlOffset = headerBytes;
-    const uint64_t slotsOffset   = controlOffset + controlBytes;
-    const uint64_t payloadOffset = slotsOffset + slotTableSize;
-    const uint64_t regionBytes   = payloadOffset + payloadBytes;
-
-    if (regionBytes > kMaxRegionBytes)
-    {
-        ERR("RingBuffer::configure: region of " + std::to_string(regionBytes / (1024 * 1024))
-            + " MiB exceeds the " + std::to_string(kMaxRegionBytes / (1024 * 1024))
-            + " MiB limit");
-        return false;
-    }
+    const uint64_t frameBytes    = lay.frameBytes;
+    const uint64_t slotStride    = lay.slotStride;
+    const uint64_t regionBytes   = lay.regionBytes;
+    const uint64_t slotsOffset   = lay.slotsOffset;
+    const uint64_t payloadOffset = lay.payloadOffset;
 
     uint8_t* region = static_cast<uint8_t*>(
         m_mem.acquire(m_mem.ctx, static_cast<size_t>(regionBytes), kCacheLine));
@@ -538,10 +692,11 @@ bool RingBuffer::configure()
 
     m_region        = region;
     m_regionBytes   = regionBytes;
-    m_controlOffset = controlOffset;
+    m_controlOffset = lay.controlOffset;
     m_slotsOffset   = slotsOffset;
     m_payloadOffset = payloadOffset;
     m_slotStride    = slotStride;
+    m_frameBytes    = frameBytes;
 
     // Placement-new every object that lives in the region. All of them are
     // trivially destructible, so tearing the region down is just a free().
@@ -562,7 +717,7 @@ bool RingBuffer::configure()
     copyFixed(m_header->cameraId, sizeof(m_header->cameraId), m_cameraId);
     copyFixed(m_header->comment,  sizeof(m_header->comment),  m_comment);
 
-    m_control = new (region + controlOffset) UC2_Control();
+    m_control = new (region + m_controlOffset) UC2_Control();
 
     for (uint32_t i = 0; i < m_cfg.slotCount; ++i)
     {
@@ -614,14 +769,159 @@ const UC2_SlotRecord* RingBuffer::slotAt(uint32_t index) const
     return const_cast<RingBuffer*>(this)->slotAt(index);
 }
 
-uint8_t* RingBuffer::payloadAt(const UC2_SlotRecord& rec)
+uint8_t* RingBuffer::payloadAt(uint32_t index)
 {
-    return m_region + rec.payloadOffset;
+    return m_region + m_payloadOffset + static_cast<uint64_t>(index) * m_slotStride;
 }
 
-const uint8_t* RingBuffer::payloadAt(const UC2_SlotRecord& rec) const
+const uint8_t* RingBuffer::payloadAt(uint32_t index) const
 {
-    return m_region + rec.payloadOffset;
+    return const_cast<RingBuffer*>(this)->payloadAt(index);
+}
+
+int RingBuffer::sharedFd() const
+{
+    return (m_configured && !m_attached) ? m_shmFd : -1;
+}
+
+// ---------------------------------------------------------------------------
+// RingBuffer -- attaching to another process's region
+// ---------------------------------------------------------------------------
+
+namespace {
+
+extern "C" void unmapRelease(void* /*ctx*/, void* base, size_t bytes)
+{
+    ::munmap(base, bytes);
+}
+
+/// Check @p h (a private copy) against the size of the mapping it came from.
+/// @return empty if the header describes a ring of exactly @p mappedBytes,
+///         otherwise why not.
+std::string validateHeader(const UC2_SessionHeader& h, uint64_t mappedBytes, RegionLayout& lay)
+{
+    if (std::memcmp(h.magic, "UC2RB\0\0\0", 8) != 0)
+    {
+        return "no ring buffer header (bad magic)";
+    }
+    if (h.layoutVersion != kLayoutVersion)
+    {
+        return "layout version " + std::to_string(h.layoutVersion) + ", expected "
+             + std::to_string(kLayoutVersion);
+    }
+    if (h.headerBytes != sizeof(UC2_SessionHeader))
+    {
+        return "header size " + std::to_string(h.headerBytes) + ", expected "
+             + std::to_string(sizeof(UC2_SessionHeader));
+    }
+    if (h.width == 0 || h.height == 0 || h.width > kMaxDimension || h.height > kMaxDimension
+        || h.channels == 0 || h.channels > kMaxChannels || !validDepth(h.depth))
+    {
+        return "implausible geometry " + std::to_string(h.width) + "x" + std::to_string(h.height)
+             + "x" + std::to_string(h.channels) + ", depth " + std::to_string(h.depth);
+    }
+    if (h.slotCount < 2 || h.slotCount > kMaxSlots)
+    {
+        return "slot count " + std::to_string(h.slotCount) + " out of range";
+    }
+    std::string why;
+    if (!computeLayout(h.width, h.height, h.channels, static_cast<PixelDepth>(h.depth), h.slotCount,
+                       lay, why))
+    {
+        return why;
+    }
+    if (h.frameBytes != lay.frameBytes || h.slotStride != lay.slotStride)
+    {
+        return "frame size or stride does not match the geometry";
+    }
+    if (lay.regionBytes != mappedBytes)
+    {
+        return "the header describes " + std::to_string(lay.regionBytes) + " bytes, the region has "
+             + std::to_string(mappedBytes);
+    }
+    return std::string();
+}
+
+} // namespace
+
+std::shared_ptr<RingBuffer> RingBuffer::attach(int fd)
+{
+#if defined(__linux__)
+    struct stat st;
+    if (::fstat(fd, &st) != 0)
+    {
+        ERR("RingBuffer::attach: fstat failed: " + std::string(std::strerror(errno)));
+        return nullptr;
+    }
+    // Only a region sealed against resizing is safe to map: otherwise the
+    // producer side could shrink it and turn our reads into SIGBUS.
+    const int seals = ::fcntl(fd, F_GET_SEALS);
+    const int needed = F_SEAL_SHRINK | F_SEAL_GROW;
+    if (seals < 0 || (seals & needed) != needed)
+    {
+        ERR("RingBuffer::attach: the region is not sealed against resizing - refusing to map it");
+        return nullptr;
+    }
+    const uint64_t size = static_cast<uint64_t>(st.st_size);
+    if (size < sizeof(UC2_SessionHeader) + sizeof(UC2_Control))
+    {
+        ERR("RingBuffer::attach: region of " + std::to_string(size) + " bytes is too small");
+        return nullptr;
+    }
+    void* base = ::mmap(nullptr, static_cast<size_t>(size), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED)
+    {
+        ERR("RingBuffer::attach: mmap failed: " + std::string(std::strerror(errno)));
+        return nullptr;
+    }
+
+    // Validate a private copy: the producer could change the shared header
+    // while we look at it, and from here on only the copy is trusted.
+    UC2_SessionHeader h;
+    std::memcpy(&h, base, sizeof(h));
+    RegionLayout lay;
+    const std::string bad = validateHeader(h, size, lay);
+    if (!bad.empty())
+    {
+        ::munmap(base, static_cast<size_t>(size));
+        ERR("RingBuffer::attach: " + bad);
+        return nullptr;
+    }
+
+    Config cfg;
+    cfg.slotCount = h.slotCount;
+    std::shared_ptr<RingBuffer> rb(new RingBuffer(cfg));
+    rb->m_mem.abiVersion = kAbiVersion;
+    rb->m_mem.ctx        = nullptr;
+    rb->m_mem.acquire    = nullptr;   // never called: the ring is configured already
+    rb->m_mem.release    = &unmapRelease;
+
+    rb->m_region        = static_cast<uint8_t*>(base);
+    rb->m_regionBytes   = size;
+    rb->m_controlOffset = lay.controlOffset;
+    rb->m_slotsOffset   = lay.slotsOffset;
+    rb->m_payloadOffset = lay.payloadOffset;
+    rb->m_slotStride    = lay.slotStride;
+    rb->m_frameBytes    = lay.frameBytes;
+    rb->m_width         = h.width;
+    rb->m_height        = h.height;
+    rb->m_channels      = h.channels;
+    rb->m_depth         = static_cast<PixelDepth>(h.depth);
+    rb->m_cameraId      = std::string(h.cameraId, strnlen(h.cameraId, sizeof(h.cameraId)));
+    rb->m_comment       = std::string(h.comment, strnlen(h.comment, sizeof(h.comment)));
+    rb->m_header        = static_cast<UC2_SessionHeader*>(base);
+    rb->m_control       = reinterpret_cast<UC2_Control*>(rb->m_region + lay.controlOffset);
+    rb->m_attached      = true;
+    rb->m_configured    = true;
+    DBG("RingBuffer: attached " + std::to_string(h.slotCount) + " slots x " + std::to_string(h.width)
+        + "x" + std::to_string(h.height) + "x" + std::to_string(h.channels) + " "
+        + depthName(rb->m_depth) + " (" + std::to_string(size / (1024 * 1024)) + " MiB)");
+    return rb;
+#else
+    (void)fd;
+    ERR("RingBuffer::attach: shared memory is only available on Linux");
+    return nullptr;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +934,11 @@ bool RingBuffer::addSink(const UC2_SinkOps& ops)
     {
         ERR("RingBuffer::addSink: ABI version mismatch (got " + std::to_string(ops.abiVersion)
             + ", expected " + std::to_string(kAbiVersion) + ")");
+        return false;
+    }
+    if (m_attached)
+    {
+        ERR("RingBuffer::addSink: an attached ring can only be read");
         return false;
     }
     if (isRecording())
@@ -662,6 +967,11 @@ bool RingBuffer::startRecording()
     if (!m_configured)
     {
         ERR("RingBuffer::startRecording: buffer is not configured");
+        return false;
+    }
+    if (m_attached)
+    {
+        ERR("RingBuffer::startRecording: an attached ring can only be read");
         return false;
     }
     std::lock_guard<std::mutex> lk(m_streamMtx);
@@ -698,7 +1008,7 @@ bool RingBuffer::startRecording()
 
 void RingBuffer::stopRecording()
 {
-    if (!m_configured)
+    if (!m_configured || m_attached)   // the recording flag of an attached ring is the producer's
     {
         return;
     }
@@ -750,10 +1060,10 @@ void RingBuffer::dispatchFrame(const UC2_SlotRecord& rec, const uint8_t* payload
     ref.tsBeforeNs = rec.tsBeforeNs.load(std::memory_order_relaxed);
     ref.tsAfterNs  = rec.tsAfterNs.load(std::memory_order_relaxed);
     ref.slot       = static_cast<uint32_t>(ref.sequence % m_cfg.slotCount);
-    ref.width      = m_header->width;
-    ref.height     = m_header->height;
-    ref.channels   = m_header->channels;
-    ref.depth      = m_header->depth;
+    ref.width      = m_width;
+    ref.height     = m_height;
+    ref.channels   = m_channels;
+    ref.depth      = static_cast<uint8_t>(m_depth);
 
     for (UC2_SinkOps& s : m_sinks)
     {
@@ -833,6 +1143,11 @@ bool RingBuffer::beginWrite(WriteHandle& out, int64_t tsBeforeNs)
         ERR("RingBuffer::beginWrite: buffer is not configured");
         return false;
     }
+    if (m_attached)
+    {
+        ERR("RingBuffer::beginWrite: an attached ring can only be read");
+        return false;
+    }
     if (out.held())
     {
         ERR("RingBuffer::beginWrite: the handle already holds a slot");
@@ -865,8 +1180,8 @@ bool RingBuffer::beginWrite(WriteHandle& out, int64_t tsBeforeNs)
     rec->tsAfterNs.store(0, std::memory_order_relaxed);
 
     out.m_owner    = this;
-    out.m_data     = payloadAt(*rec);
-    out.m_capacity = m_header->frameBytes;
+    out.m_data     = payloadAt(slot);
+    out.m_capacity = m_frameBytes;
     out.m_sequence = sequence;
     out.m_slot     = slot;
     return true;
@@ -886,11 +1201,11 @@ bool RingBuffer::commitWrite(WriteHandle& handle, uint64_t nbytes, int64_t tsAft
     }
 
     uint64_t n = nbytes;
-    if (n > m_header->frameBytes)
+    if (n > m_frameBytes)
     {
         WARN("RingBuffer::commitWrite: " + std::to_string(nbytes) + " bytes exceed the "
-             + std::to_string(m_header->frameBytes) + " byte frame size - truncating");
-        n = m_header->frameBytes;
+             + std::to_string(m_frameBytes) + " byte frame size - truncating");
+        n = m_frameBytes;
     }
 
     UC2_SlotRecord* rec = slotAt(handle.m_slot);
@@ -903,16 +1218,21 @@ bool RingBuffer::commitWrite(WriteHandle& handle, uint64_t nbytes, int64_t tsAft
     m_control->writeSequence.store(handle.m_sequence + 1, std::memory_order_release);
     m_control->committedCount.fetch_add(1, std::memory_order_release);
 
-    const uint8_t* payload = payloadAt(*rec);
+    const uint8_t* payload = payloadAt(handle.m_slot);
 
     handle.m_owner = nullptr;
     handle.m_data  = nullptr;
     m_writeBusy.store(false, std::memory_order_release);
 
+    // Wake readers in waitForFrame(), in this process or another one. Bumping
+    // the word after committedCount is what lets a waiter that saw the old
+    // value rely on the futex comparison; the syscall is skipped while nobody
+    // sleeps.
+    m_control->frameSignal.fetch_add(1, std::memory_order_seq_cst);
+    if (m_control->frameWaiters.load(std::memory_order_seq_cst) != 0)
     {
-        std::lock_guard<std::mutex> lk(m_mtx);
+        futexWakeAll(m_control->frameSignal);
     }
-    m_frameReady.notify_all();
 
     dispatchFrame(*rec, payload, n);
     return true;
@@ -974,6 +1294,11 @@ uint32_t RingBuffer::registerConsumer()
     if (!m_configured)
     {
         ERR("RingBuffer::registerConsumer: buffer is not configured");
+        return kAnonymousConsumer;
+    }
+    if (m_attached)
+    {
+        ERR("RingBuffer::registerConsumer: an attached ring reads anonymously only");
         return kAnonymousConsumer;
     }
     for (uint32_t i = 0; i < kMaxConsumers; ++i)
@@ -1069,7 +1394,9 @@ bool RingBuffer::acquireSlot(uint32_t index, const uint64_t* wantSequence,
     {
         return false;   // the frame asked for has already been recycled
     }
-    const uint64_t nbytes     = rec->nbytes.load(std::memory_order_relaxed);
+    // Clamped: in an attached ring the record was written by another process,
+    // and nbytes decides how far a consumer such as the disk writer reads.
+    const uint64_t nbytes     = std::min(rec->nbytes.load(std::memory_order_relaxed), m_frameBytes);
     const int64_t  tsBeforeNs = rec->tsBeforeNs.load(std::memory_order_relaxed);
     const int64_t  tsAfterNs  = rec->tsAfterNs.load(std::memory_order_relaxed);
 
@@ -1086,7 +1413,7 @@ bool RingBuffer::acquireSlot(uint32_t index, const uint64_t* wantSequence,
     }
 
     out.m_owner      = this;
-    out.m_data       = payloadAt(*rec);
+    out.m_data       = payloadAt(index);
     out.m_nbytes     = nbytes;
     out.m_sequence   = sequence;
     out.m_tsBeforeNs = tsBeforeNs;
@@ -1159,16 +1486,32 @@ bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
     {
         return false;
     }
-    // committedCount - 1 is the newest sequence, as in readLatest(). commitWrite()
-    // bumps the count before it takes m_mtx to notify, so checking it under the
-    // lock cannot miss a wake-up.
+    // committedCount - 1 is the newest sequence, as in readLatest().
     const auto newer = [this, afterSequence]
     {
         const uint64_t committed = m_control->committedCount.load(std::memory_order_acquire);
         return static_cast<int64_t>(committed) - 1 > afterSequence;
     };
-    std::unique_lock<std::mutex> lk(m_mtx);
-    return m_frameReady.wait_for(lk, std::chrono::milliseconds(timeoutMs), newer);
+    const int64_t deadline = monotonicNs() + static_cast<int64_t>(timeoutMs) * 1000000ll;
+    for (;;)
+    {
+        // Sample the futex word BEFORE the check: a commit after the check
+        // changes it, so the futex call below returns at once instead of
+        // sleeping through that frame.
+        const uint32_t signal = m_control->frameSignal.load(std::memory_order_seq_cst);
+        if (newer())
+        {
+            return true;
+        }
+        const int64_t left = deadline - monotonicNs();
+        if (left <= 0)
+        {
+            return false;
+        }
+        m_control->frameWaiters.fetch_add(1, std::memory_order_seq_cst);
+        futexWait(m_control->frameSignal, signal, left);
+        m_control->frameWaiters.fetch_sub(1, std::memory_order_seq_cst);
+    }
 }
 
 bool RingBuffer::readSlot(uint32_t slot, ReadHandle& out, uint32_t consumer)
@@ -1190,16 +1533,18 @@ bool RingBuffer::readSequence(uint64_t sequence, ReadHandle& out, uint32_t consu
 // RingBuffer -- metadata and statistics
 // ---------------------------------------------------------------------------
 
-uint32_t   RingBuffer::width() const       { return m_header ? m_header->width : m_width; }
-uint32_t   RingBuffer::height() const      { return m_header ? m_header->height : m_height; }
-uint32_t   RingBuffer::channels() const    { return m_header ? m_header->channels : m_channels; }
+// Geometry comes from this object's own copies, never from the shared header:
+// in an attached ring another process could have changed that since attach().
+uint32_t   RingBuffer::width() const       { return m_width; }
+uint32_t   RingBuffer::height() const      { return m_height; }
+uint32_t   RingBuffer::channels() const    { return m_channels; }
 PixelDepth RingBuffer::depth() const       { return m_depth; }
-uint64_t   RingBuffer::frameBytes() const  { return m_header ? m_header->frameBytes : 0; }
+uint64_t   RingBuffer::frameBytes() const  { return m_frameBytes; }
 uint32_t   RingBuffer::slotCount() const   { return m_cfg.slotCount; }
 uint64_t   RingBuffer::regionBytes() const { return m_regionBytes; }
 
-std::string RingBuffer::cameraId() const { return m_header ? std::string(m_header->cameraId) : m_cameraId; }
-std::string RingBuffer::comment() const  { return m_header ? std::string(m_header->comment)  : m_comment; }
+std::string RingBuffer::cameraId() const { return m_cameraId.substr(0, sizeof(UC2_SessionHeader::cameraId) - 1); }
+std::string RingBuffer::comment() const  { return m_comment.substr(0, sizeof(UC2_SessionHeader::comment) - 1); }
 
 int64_t RingBuffer::startWallNs() const { return m_header ? m_header->startWallNs : 0; }
 int64_t RingBuffer::startMonoNs() const { return m_header ? m_header->startMonoNs : 0; }
@@ -1211,6 +1556,18 @@ UC2_SessionHeader RingBuffer::sessionHeader() const
     if (m_header != nullptr)
     {
         std::memcpy(&copy, m_header, sizeof(copy));
+        // Callers size numpy views and file records from this copy: the
+        // geometry is overwritten with the validated values, and the strings
+        // are terminated, whatever the shared region holds by now.
+        copy.width      = m_width;
+        copy.height     = m_height;
+        copy.channels   = m_channels;
+        copy.depth      = static_cast<uint8_t>(m_depth);
+        copy.frameBytes = m_frameBytes;
+        copy.slotCount  = m_cfg.slotCount;
+        copy.slotStride = m_slotStride;
+        copy.cameraId[sizeof(copy.cameraId) - 1] = '\0';
+        copy.comment[sizeof(copy.comment) - 1]   = '\0';
     }
     return copy;
 }
@@ -1251,6 +1608,11 @@ bool RingBuffer::startStreaming(const std::string& dirPath)
     if (!m_configured)
     {
         ERR("RingBuffer::startStreaming: buffer is not configured");
+        return false;
+    }
+    if (m_attached)
+    {
+        ERR("RingBuffer::startStreaming: an attached ring can only be read");
         return false;
     }
     if (dirPath.empty())

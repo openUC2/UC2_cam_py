@@ -28,7 +28,25 @@ LogSink          g_sink = &stderrSink;
 void*            g_ctx  = nullptr;
 std::atomic<int> g_minLevel(static_cast<int>(LogLevel::Debug));
 
+thread_local int t_source = 0;
+
 } // namespace
+
+int currentLogSource()
+{
+    return t_source;
+}
+
+ScopedLogSource::ScopedLogSource(int source)
+    : m_previous(t_source)
+{
+    t_source = source;
+}
+
+ScopedLogSource::~ScopedLogSource()
+{
+    t_source = m_previous;
+}
 
 void setLogSink(LogSink sink, void* ctx)
 {

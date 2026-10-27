@@ -108,7 +108,10 @@ add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/CameraBase.cpp
     src/HikCamera.cpp
     src/SimCamera.cpp
-    src/SimPattern.cpp)
+    src/SimPattern.cpp
+    src/CamIpc.cpp
+    src/CamWorker.cpp
+    src/RemoteCamera.cpp)
 
 set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -138,6 +141,18 @@ endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(${HIK_CAM_CORE_TARGET_NAME} PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
+# The camera process (one per camera, started by RemoteCamera). Built in both
+# configuration paths, so the C++ tests can start it; the top-level project
+# installs it next to the Python extension module.
+# ---------------------------------------------------------------------------
+add_executable(uc2_cam_worker worker/uc2_cam_worker.cpp)
+target_link_libraries(uc2_cam_worker PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
+set_target_properties(uc2_cam_worker PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(uc2_cam_worker PRIVATE -Wall -Wextra)
 endif()
 
 # ---------------------------------------------------------------------------

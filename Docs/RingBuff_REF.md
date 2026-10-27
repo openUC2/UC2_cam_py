@@ -7,7 +7,7 @@ Disk-Streaming in eine Container-Datei.
 |---|---|
 | Header | [core/include/UC2_RingBuff.h](../core/include/UC2_RingBuff.h) |
 | Implementierung | [core/src/UC2_RingBuff.cpp](../core/src/UC2_RingBuff.cpp) |
-| Tests | [core/tests/test_ringbuffer.cpp](../core/tests/test_ringbuffer.cpp) |
+| Tests | [core/tests/test_ringbuffer.cpp](../core/tests/test_ringbuffer.cpp), Shared Memory: [test_ringbuffer_shm.cpp](../core/tests/test_ringbuffer_shm.cpp) |
 | Namespace | `hik` |
 | Sprache | C++17; die Erweiterungspunkte sind C-ABI (`extern "C"`) |
 
@@ -24,15 +24,17 @@ Disk-Streaming in eine Container-Datei.
 9. [Threading, Policies und Statistik](#9-threading-policies-und-statistik)
 10. [Nutzungsmuster](#10-nutzungsmuster)
 11. [Abweichungen zwischen Header-Kommentar und Implementierung](#11-abweichungen-zwischen-header-kommentar-und-implementierung)
+12. [Shared Memory: memfd und `attach()`](#12-shared-memory-memfd-und-attach)
 
 ---
 
 ## 1. Designvertrag
 
 Der gesamte Zustand des Puffers liegt in **einer zusammenhängenden Speicherregion**. Dieselbe
-Region soll später in mehrere Prozesse gemappt werden können: Ein Kameraprozess schreibt, ein
-Streaming-Prozess speichert, ein Analyseprozess liest. Heute wird nur ein Heap-Allocator
-ausgeliefert, die Regeln gelten trotzdem schon.
+Region wird in mehrere Prozesse gemappt: Der Kamera-Prozess schreibt und speichert, die Anwendung
+liest. `Config::sharedMemory` legt die Region in einen versiegelten memfd, `RingBuffer::attach()`
+bildet sie im lesenden Prozess ab ([§12](#12-shared-memory-memfd-und-attach)). Ohne den Schalter
+liegt sie wie bisher auf dem Heap.
 
 | Regel | Begründung |
 |---|---|
@@ -48,8 +50,16 @@ in den Slot. Der Disk-Streamer schreibt mit `writev()` direkt aus dem Slot, ohne
 abgestürzter Consumer kann den Puffer deshalb nicht beschädigen. Jeder Slot hat einen
 **Seqlock-Zähler**: gerade = stabil, ungerade = Schreiben läuft. Ein Reader liest den Zähler vor
 und nach der Nutzung und verwirft den Frame, wenn der Producer den Slot inzwischen recycelt hat
-(`ReadHandle::stillValid()`). Mutex und Condition Variables liegen außerhalb der Region und dienen
-nur dazu, aktives Warten zu vermeiden.
+(`ReadHandle::stillValid()`). Wer auf das nächste Bild wartet (`waitForFrame()`), schläft per
+**futex** auf einem Zähler in der Region; das funktioniert über Prozessgrenzen und braucht keine
+Sperre, die ein abgestürzter Prozess halten könnte. Mutex und Condition Variable liegen außerhalb
+der Region und bremsen nur den Producer im Wait-Modus.
+
+**Lesen aus fremder Region.** Ein angehängter Leser vertraut keinem Wert der Region, der eine
+Adresse bestimmt: `attach()` prüft einmal eine private Kopie des Headers, danach werden alle
+Payload-Adressen und die Bildgeometrie aus dieser Kopie berechnet. Ein Producer, der die Region
+überschreibt, kann falsche Pixel erzeugen, aber den Leser nie außerhalb seiner Abbildung lesen
+lassen.
 
 ---
 
@@ -204,7 +214,7 @@ Verwaltungsdaten eines Slots in der Region. Alle veränderlichen Felder sind ato
 | `sequence` | `atomic<uint64_t>` | Globaler Frame-Index im Slot |
 | `nbytes` | `atomic<uint64_t>` | Gültige Payload-Bytes |
 | `tsBeforeNs`, `tsAfterNs` | `atomic<int64_t>` | Monotonic-Zeitstempel |
-| `payloadOffset` | `uint64_t` | Byte-Offset der Payload ab Region-Basis |
+| `payloadOffset` | `uint64_t` | Byte-Offset der Payload ab Region-Basis. Nur informativ: Lesen und Schreiben berechnen die Adresse aus der eigenen Geometrie (`payloadAt(slot)`) |
 
 ### `UC2_Consumer` (64 B) — [L183](../core/include/UC2_RingBuff.h#L183)
 
@@ -229,6 +239,8 @@ Producer-Cursor, Zähler und Consumer-Tabelle.
 | `aborted` | Über `abortWrite()` abgebrochene Schreibvorgänge |
 | `rejectedReads` | Vom Seqlock abgewiesene Lesezugriffe |
 | `recording` | ≠ 0 zwischen `startRecording()` und `stopRecording()` |
+| `frameSignal` | futex-Wort, bei jedem `commitWrite()` erhöht (seit Layout-Version 2, vorher `reserved0`) |
+| `frameWaiters` | Zahl der Leser, die gerade in `waitForFrame()` schlafen; nur dann ruft der Producer `FUTEX_WAKE` |
 | `consumers[kMaxConsumers]` | Tabelle der `UC2_Consumer` |
 
 ### `UC2_FrameRef` — [L210](../core/include/UC2_RingBuff.h#L210)
@@ -282,9 +294,10 @@ Liefert die Speicherregion des Puffers.
 | `acquire` | **ja** | Region anfordern |
 | `release` | **ja** | Region freigeben |
 
-Standard ist `heapMemoryOps()` (`posix_memalign`/`free`). Eine Variante mit `shm_open` + `mmap`
-für mehrere Prozesse kann hier ohne weitere Änderungen eingesetzt werden. Installation über
-`RingBuffer::setMemoryOps()` vor `configure()`.
+Standard ist `heapMemoryOps()` (`posix_memalign`/`free`). `Config::sharedMemory` wählt statt dessen
+den eingebauten memfd-Allocator ([§12](#12-shared-memory-memfd-und-attach)); beides schließt
+`setMemoryOps()` aus. Ein eigener Allocator wird über `RingBuffer::setMemoryOps()` vor `configure()`
+installiert.
 
 ### `UC2_SinkOps` — [L271](../core/include/UC2_RingBuff.h#L271)
 
@@ -384,6 +397,7 @@ Kamera bekannt ist.
 | `comment` | `std::string` | leer | Freitext im Session-Header |
 | `policy` | `FullPolicy` | `Overwrite` | Verhalten bei vollem Ring |
 | `waitTimeoutMs` | `uint32_t` | 1000 | Timeout im Wait-Modus, danach wird überschrieben |
+| `sharedMemory` | `bool` | `false` | Region in einem versiegelten memfd, den ein anderer Prozess mit `attach()` abbilden kann (nur Linux) |
 
 ### 7.3 `RingBuffer::WriteHandle` — [L351](../core/include/UC2_RingBuff.h#L351)
 
@@ -424,13 +438,13 @@ dem Verarbeiten `stillValid()` prüfen.
 
 | Methode | Beschreibung | `false` wenn |
 |---|---|---|
-| `explicit RingBuffer(const Config& cfg)` | Installiert `heapMemoryOps()` und übernimmt `cfg.comment`. | — |
+| `explicit RingBuffer(const Config& cfg)` | Installiert `heapMemoryOps()` bzw. bei `cfg.sharedMemory` den memfd-Allocator und übernimmt `cfg.comment`. | — |
 | `bool setImageSize(uint32_t width, uint32_t height)` | Bildgröße | bereits konfiguriert, 0 oder > 65536 |
 | `bool setChannels(uint32_t channels)` | Kanäle pro Pixel (Default 1) | bereits konfiguriert, 0 oder > 4096 |
 | `bool setDepth(PixelDepth depth)` | Sampletyp (Default `UInt8`) | bereits konfiguriert, unbekannter Wert |
 | `bool setCameraId(const std::string& id)` | Kamerakennung; über 63 Zeichen wird mit Warnung abgeschnitten | bereits konfiguriert |
 | `bool setComment(const std::string& comment)` | Überschreibt `Config::comment`; über 8191 Zeichen wird mit Warnung abgeschnitten | bereits konfiguriert |
-| `bool setMemoryOps(const UC2_MemoryOps& ops)` | Eigener Allocator | bereits konfiguriert, ABI falsch, `acquire`/`release` fehlt |
+| `bool setMemoryOps(const UC2_MemoryOps& ops)` | Eigener Allocator | bereits konfiguriert, ABI falsch, `acquire`/`release` fehlt, `Config::sharedMemory` gesetzt |
 | `bool configure()` | Prüft die Geometrie, allokiert die Region, legt die Slots an und erzeugt bei gesetztem `storagePath` den `FileStreamSink`. Ist der Puffer schon konfiguriert, sofort `true`. | Bildgröße fehlt, `slotCount` außerhalb 2…65536, Überlauf, > 16 GiB, Allokation fehlgeschlagen |
 | `bool isConfigured() const` | `true` nach erfolgreichem `configure()` | — |
 
@@ -464,7 +478,7 @@ Es gibt genau **einen** Producer. Ein zweiter gleichzeitiger `beginWrite()` wird
 | `uint32_t registerConsumer()` | Belegt einen Eintrag in der Consumer-Tabelle. Der Cursor startet bei `committedCount`, ein spät hinzukommender Consumer bremst also nicht wegen alter Frames. Gibt `kAnonymousConsumer` zurück, wenn die Tabelle voll (8) oder der Puffer nicht konfiguriert ist. |
 | `void unregisterConsumer(uint32_t consumer)` | Gibt den Eintrag frei; der Consumer bremst den Producer nicht mehr |
 | `bool readLatest(ReadHandle& out, uint32_t consumer = kAnonymousConsumer)` | Liest den zuletzt veröffentlichten Frame. `false`, wenn noch nichts veröffentlicht wurde oder der Slot gerade neu beschrieben wird. |
-| `bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs)` | Blockiert, bis ein Frame mit Sequenz > `afterSequence` veröffentlicht ist (`-1`: irgendeiner), höchstens `timeoutMs`. `true`, wenn es ihn gibt; `false` nach dem Timeout oder sofort, wenn der Puffer nicht konfiguriert ist. Wartet auf `m_frameReady`, das `commitWrite()` signalisiert — statt `readLatest()` zu pollen. |
+| `bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs)` | Blockiert, bis ein Frame mit Sequenz > `afterSequence` veröffentlicht ist (`-1`: irgendeiner), höchstens `timeoutMs`. `true`, wenn es ihn gibt; `false` nach dem Timeout oder sofort, wenn der Puffer nicht konfiguriert ist. Schläft per futex auf `UC2_Control::frameSignal`, das `commitWrite()` erhöht — statt `readLatest()` zu pollen. Funktioniert auch auf einem angehängten Ring; der Producer im anderen Prozess weckt. |
 | `bool readSlot(uint32_t slot, ReadHandle& out, uint32_t consumer = kAnonymousConsumer)` | Liest den Frame, der gerade in Slot `slot` liegt (beliebige Sequenz). `false` bei Index außerhalb des Bereichs oder ohne veröffentlichten Frame. |
 | `bool readSequence(uint64_t sequence, ReadHandle& out, uint32_t consumer = kAnonymousConsumer)` | Liest den Frame mit globalem Index `sequence`, falls er noch im Ring liegt. `false`, wenn er bereits recycelt wurde. |
 | `void acknowledge(uint32_t consumer, uint64_t sequence)` | Schiebt den Cursor des Consumers hinter `sequence`, ohne zu lesen; der Cursor bewegt sich nur vorwärts. Damit kann ein Consumer Frames überspringen, ohne den Producer im Wait-Modus aufzuhalten. |
@@ -588,6 +602,7 @@ Warnung; die Aufnahme läuft weiter.
 | `read…()` / `ReadHandle` / `acknowledge()` | beliebige Consumer-Threads |
 | Writer von `FileStreamSink` | eigener `std::thread` |
 | Setter, `configure`, `addSink`, `start/stopRecording` | Steuer-Thread; nicht gegen gleichzeitige Aufrufe abgesichert |
+| Angehängter Ring (`attach()`) | beliebige Threads des lesenden Prozesses; nur `read…()`, `waitForFrame()`, Metadaten und Statistik |
 
 **Overwrite oder Wait**
 
@@ -673,3 +688,48 @@ beschreibt jeweils das tatsächliche Verhalten.
 | `UC2_SinkOps` [L264](../core/include/UC2_RingBuff.h#L264) | Streamer „only records the sequence number“ | `frameThunk` weckt nur den Writer-Thread; die Sequenz führt der Writer selbst mit (`m_cursor`). |
 | `UC2_SessionHeader` [L121](../core/include/UC2_RingBuff.h#L121) | „Written once at configure() time“ | `startWallNs`/`startMonoNs` werden bei jedem `startRecording()` neu gesetzt. |
 | `UC2_FrameHeader::sequence` [L152](../core/include/UC2_RingBuff.h#L152) | „0-based and gap-free“ | Im Ring stimmt das. In der Container-Datei kann es Lücken geben (siehe [§8](#datei-layout-uc2rb)). |
+
+---
+
+## 12. Shared Memory: memfd und `attach()`
+
+Grundlage dafür, dass jede Kamera in einem eigenen Prozess läuft (`RemoteCamera`, `uc2_cam_worker`)
+und die Anwendung trotzdem kopierfrei liest.
+
+**Producer (`Config::sharedMemory = true`).** `configure()` belegt die Region so:
+
+1. `memfd_create(MFD_CLOEXEC | MFD_ALLOW_SEALING)`: kein Name im Dateisystem, also nichts
+   aufzuräumen, wenn ein Prozess abstürzt; der Kernel gibt den Speicher frei, sobald der letzte fd
+   und die letzte Abbildung weg sind.
+2. `fallocate()`: Die Seiten werden sofort reserviert. Speichermangel zeigt sich als Fehler von
+   `configure()`, nicht später als SIGBUS beim ersten Zugriff.
+3. Seals `F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL`: Niemand kann die Größe mehr ändern. Ein
+   Zugriff jenseits des Dateiendes einer Abbildung löst SIGBUS aus; das ist damit ausgeschlossen.
+4. `mmap(MAP_SHARED)`. `sharedFd()` liefert den fd zum Weiterreichen (per `SCM_RIGHTS`).
+
+**Leser (`static std::shared_ptr<RingBuffer> attach(int fd)`).** Bildet die Region ab, wenn sie
+
+- versiegelt ist (`F_GET_SEALS` enthält SHRINK und GROW),
+- einen Header mit Magic, `layoutVersion == kLayoutVersion` und `headerBytes` hat,
+- eine plausible Geometrie beschreibt (Größen, Kanäle, Tiefe, `slotCount` 2…65536) und
+- `frameBytes`, `slotStride` und die daraus berechnete Regionsgröße exakt zu `fstat` passen.
+
+Sonst `nullptr` und ein ERR mit dem Grund, nie ein Absturz. Den fd übernimmt `attach()` nicht.
+
+| Methode | Beschreibung |
+|---|---|
+| `static std::shared_ptr<RingBuffer> attach(int fd)` | Angehängter Ring; seine Lebensdauer ist die Lebensdauer der Abbildung, unabhängig vom Producer |
+| `bool isAttached() const` | `true` für einen Ring aus `attach()` |
+| `int sharedFd() const` | memfd eines konfigurierten `sharedMemory`-Rings; -1 bei Heap oder angehängt |
+
+Ein angehängter Ring liest nur: `beginWrite`, `writeFrame`, `startRecording`, `startStreaming`,
+`addSink` werden mit ERR abgewiesen, `registerConsumer()` liefert `kAnonymousConsumer`, und
+`stopRecording()` (auch aus dem Destruktor) lässt das `recording`-Flag des Producers in Ruhe.
+Geometrie, `frameBytes()` und `sessionHeader()` kommen aus der geprüften Kopie;
+`sessionHeader()` überschreibt die Geometriefelder der geteilten Kopie und terminiert
+`cameraId`/`comment`, was auch immer die Region inzwischen enthält. `acquireSlot()` begrenzt
+`nbytes` auf `frameBytes`.
+
+Getestet in `test_ringbuffer_shm.cpp` (`[shm]`, `[shm][mt]`): Siegel und EPERM bei `ftruncate`,
+abgewiesene manipulierte Header, ein Producer, der die Region überschreibt, ein Producer-Prozess,
+der per SIGKILL mitten im Frame stirbt, und das prozessübergreifende Aufwecken.

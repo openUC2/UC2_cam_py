@@ -16,7 +16,7 @@ READ_ONLY = [
     "can_set_gain", "can_set_frame_rate", "can_set_binning", "can_set_trigger", "can_set_exposure",
     "range_exposure_time_ms", "range_frame_rate_per_sec", "range_gain_db", "range_binning",
     "pixel_count", "pixel_pitch_um", "pixel_size_um", "connection_type", "vendor", "serial",
-    "index", "buffer_size", "is_recording",
+    "index", "buffer_size", "is_recording", "process_id",
 ]
 SETTINGS = ["exposure_time_ms", "frame_rate_per_sec", "gain_db", "binning", "trigger", "roi"]
 METHODS = ["get_last_image", "get_image", "get_image_info", "start", "stop", "close"]
@@ -85,7 +85,7 @@ def test_create_camera_signature() -> None:
     expected = {
         "vendor": None, "connection_type": None, "serial": None, "index": None,
         "buffer_size": None, "start_on_init": False, "image_file_path": None,
-        "store_image_data": True, "logger": None, "debug_window": False,
+        "store_image_data": True, "logger": None, "debug_window": False, "separate_process": None,
     }
     for name, default in expected.items():
         assert name in params, name
