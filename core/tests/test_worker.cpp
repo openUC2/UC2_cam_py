@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
@@ -27,6 +28,7 @@
 #include "CamIpc.h"
 #include "RemoteCamera.h"
 #include "SimPattern.h"
+#include "UC2Version.h"
 #include "test_image_helpers.h"
 
 using hik::CameraBase;
@@ -129,6 +131,13 @@ struct RawWorker
         Message hello = next();
         REQUIRE(hello.kind() == Kind::Event);
         REQUIRE(hello.op() == Op::Hello);
+        uint32_t protocol = 0;
+        int64_t  helloPid = 0;
+        REQUIRE(hello.getU32(protocol));
+        REQUIRE(hello.getI64(helloPid));
+        REQUIRE(hello.getStr(helloVersion));
+        CHECK(protocol == hik::ipc::kProtocolVersion);
+        CHECK(helloPid == pid);
     }
     ~RawWorker()
     {
@@ -198,6 +207,7 @@ struct RawWorker
     }
 
     std::vector<Message> logs;
+    std::string          helloVersion;   ///< software version from the Hello
 };
 
 } // namespace
@@ -298,6 +308,61 @@ TEST_CASE("opening errors arrive as the exception types of the in-process path",
     CHECK_THROWS_AS(RemoteCamera(kWorker, "HikRobot", "CameraLink", "", -1, {}), std::invalid_argument);
     CHECK_THROWS_AS(RemoteCamera("/nonexistent/uc2_cam_worker", "Simulated", "", "", -1, {}),
                     std::runtime_error);
+}
+
+TEST_CASE("the camera process says hello with its software version", "[worker]")
+{
+    RawWorker w;
+    CHECK(w.helloVersion == hik::version());
+}
+
+TEST_CASE("a camera process of another version is refused", "[worker]")
+{
+    TempDir dir;
+    const std::string pidFile = (dir.path / "fake.pid").string();
+    ::setenv("UC2_FAKE_WORKER_PIDFILE", pidFile.c_str(), 1);
+    // The exception is the whole report: no "camera lost" error besides it.
+    std::atomic<int> errors{0};
+    hik::setLogSink([](hik::LogLevel level, const char*, void* ctx) {
+        if (level == hik::LogLevel::Error)
+        {
+            static_cast<std::atomic<int>*>(ctx)->fetch_add(1);
+        }
+    }, &errors);
+
+    SECTION("a different version")
+    {
+        ::setenv("UC2_FAKE_WORKER_VERSION", "0.0.1", 1);
+        try
+        {
+            RemoteCamera cam(UC2_CAM_FAKE_WORKER_PATH, "Simulated", "", "", -1, {});
+            FAIL("a camera process of version 0.0.1 was accepted");
+        }
+        catch (const std::runtime_error& e)
+        {
+            const std::string what = e.what();
+            CHECK(what.find("version 0.0.1") != std::string::npos);
+            CHECK(what.find(hik::version()) != std::string::npos);
+            CHECK(what.find("reinstall") != std::string::npos);
+        }
+    }
+    SECTION("no version at all")
+    {
+        ::unsetenv("UC2_FAKE_WORKER_VERSION");
+        CHECK_THROWS_AS(RemoteCamera(UC2_CAM_FAKE_WORKER_PATH, "Simulated", "", "", -1, {}),
+                        std::runtime_error);
+    }
+
+    // The refused process has been collected, not left behind.
+    std::ifstream f(pidFile);
+    pid_t pid = -1;
+    REQUIRE(f >> pid);
+    CHECK_FALSE(processExists(pid));
+    CHECK(errors.load() == 0);
+
+    hik::setLogSink(nullptr, nullptr);
+    ::unsetenv("UC2_FAKE_WORKER_VERSION");
+    ::unsetenv("UC2_FAKE_WORKER_PIDFILE");
 }
 
 TEST_CASE("a killed camera process is reported and images already read stay valid", "[worker]")

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "UC2_RingBuff.h"
+#include "UC2Version.h"
 
 using hik::PixelDepth;
 using hik::RingBuffer;
@@ -164,6 +165,7 @@ TEST_CASE("a recorded session round-trips through the container file", "[ring][s
     CHECK(header.slotCount == 8);
     CHECK(std::string(header.cameraId) == "cam-test");
     CHECK(std::string(header.comment) == "container round trip");
+    CHECK(std::string(header.softwareVersion) == hik::version());   // which build wrote the file
     CHECK(header.startWallNs > 0);
     CHECK(header.startMonoNs > 0);
 
@@ -218,6 +220,7 @@ TEST_CASE("the JSON sidecar describes the recording", "[ring][stream]")
     CHECK(text.find("\"dtype\": \"float64\"") != std::string::npos);
     CHECK(text.find("\"frameBytes\": 480") != std::string::npos);   // 6*2*5*8
     CHECK(text.find("\"cameraId\": \"cam/with:odd chars\"") != std::string::npos);
+    CHECK(text.find("\"softwareVersion\": \"" + std::string(hik::version()) + "\"") != std::string::npos);
     CHECK(text.find("\\\"quotes\\\"") != std::string::npos);   // escaped, not raw
     CHECK(text.find("\\n") != std::string::npos);
     CHECK(text.find("\"startTimeUtc\": \"20") != std::string::npos);

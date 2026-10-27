@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 
+import uc2_cam_py
 from uc2_cam_py import ImgMetaData, _resources
 
 from conftest import BUFFER, wait_for_frames
 
 SESSION_HEADER_BYTES = 8448
 FRAME_HEADER_BYTES = 64
+SOFTWARE_VERSION_FIELD = slice(8328, 8360)   # UC2_SessionHeader::softwareVersion (Docs/RingBuff_REF.md)
 
 
 def test_no_session_info_before_start(camera) -> None:
@@ -30,6 +32,7 @@ def test_session_info_describes_the_recording(camera) -> None:
     assert (meta.width, meta.height) == camera.image_size
     assert meta.slot_count == BUFFER
     assert camera.serial in meta.camera_id
+    assert meta.software_version == uc2_cam_py.__version__
     assert abs(meta.start_wall_ns - time.time_ns()) < 60e9
 
     settings = json.loads(meta.comment)
@@ -58,6 +61,11 @@ def test_recording_writes_header_frames_and_sidecar(open_camera, recording_dir) 
     assert path.stat().st_size == SESSION_HEADER_BYTES + saved * (FRAME_HEADER_BYTES + meta.frame_bytes)
     sidecar = json.loads(path.with_suffix(".json").read_text())
     assert sidecar["cameraId"] == meta.camera_id
+    # Every file says which version wrote it: in its header and in the sidecar.
+    with path.open("rb") as f:
+        header = f.read(SESSION_HEADER_BYTES)
+    assert header[SOFTWARE_VERSION_FIELD].rstrip(b"\0").decode() == uc2_cam_py.__version__
+    assert sidecar["softwareVersion"] == uc2_cam_py.__version__
 
 
 def test_every_start_opens_a_new_file(open_camera) -> None:

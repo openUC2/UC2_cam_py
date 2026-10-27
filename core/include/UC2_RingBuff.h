@@ -153,7 +153,8 @@ struct UC2_SessionHeader
     uint64_t slotStride;      ///< payload stride in bytes (frameBytes, cache-aligned)
     char     cameraId[64];    ///< NUL-terminated camera identifier
     char     comment[8192];   ///< NUL-terminated free-text comment, max. 8191 characters
-    uint8_t  reserved2[120];
+    char     softwareVersion[32];   ///< uc2_cam_py version that wrote the session ("" in older files)
+    uint8_t  reserved2[88];
 };
 
 /// Fixed-size record prefixed to every frame in the container file.

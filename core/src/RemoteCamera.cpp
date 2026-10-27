@@ -1,5 +1,6 @@
 #include "RemoteCamera.h"
 
+#include "UC2Version.h"
 #include "hikLog.h"
 
 #include <fcntl.h>
@@ -115,6 +116,18 @@ RemoteCamera::RemoteCamera(const std::string& workerPath, const std::string& ven
             shutdownProcess();
             throw std::runtime_error("the camera process did not start" + exitDescription());
         }
+        // The camera process is a separate binary: a stale copy from another
+        // build must not drive the camera with this library's assumptions.
+        if (m_workerVersion != version())
+        {
+            const std::string got = m_workerVersion.empty() ? "an unknown version" : "version " + m_workerVersion;
+            m_closing = true;   // the end of the process is expected from here on
+            lk.unlock();
+            shutdownProcess();
+            throw std::runtime_error("the camera process '" + workerPath + "' is " + got
+                                     + ", this library is version " + version()
+                                     + " - reinstall uc2_cam_py");
+        }
     }
 
     Message req = newRequest(Op::Open);
@@ -137,7 +150,7 @@ RemoteCamera::RemoteCamera(const std::string& workerPath, const std::string& ven
         m_connectionType = c;
         m_index          = static_cast<int>(idx);
         DBG("RemoteCamera: " + m_vendor + " " + m_model + " " + m_serial + " runs in process "
-            + std::to_string(m_pid));
+            + std::to_string(m_pid) + " (uc2_cam_worker " + m_workerVersion + ")");
         return;
     }
 
@@ -870,12 +883,18 @@ void RemoteCamera::handleEvent(Message& msg, int fd)
     {
     case Op::Hello:
     {
-        uint32_t version = 0;
-        int64_t  pid     = 0;
-        if (msg.getU32(version) && msg.getI64(pid))
+        uint32_t protocol = 0;
+        int64_t  pid      = 0;
+        std::string software;
+        if (msg.getU32(protocol) && msg.getI64(pid))
         {
+            if (!msg.getStr(software))
+            {
+                software.clear();   // checked by the constructor
+            }
             std::lock_guard<std::mutex> lk(m_mtx);
-            m_hello = true;
+            m_workerVersion = software;
+            m_hello         = true;
         }
         m_cv.notify_all();
         break;

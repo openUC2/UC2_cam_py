@@ -21,11 +21,32 @@ import uc2_cam_py
 
 
 def test_import_and_version() -> None:
-    """The package imports and exposes the expected public API."""
-    assert uc2_cam_py.__version__ == "0.2.0"
+    """The package imports and exposes the expected public API; one version everywhere."""
+    import importlib.metadata
+    import re
+    from pathlib import Path
+
+    from uc2_cam_py import _hik
+
+    version = (Path(__file__).parents[1] / "VERSION").read_text().strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)              # SemVer MAJOR.MINOR.PATCH
+    assert uc2_cam_py.__version__ == version
+    assert _hik.__version__ == version                            # compiled into the C++ core
+    assert importlib.metadata.version("uc2_cam_py") == version    # package metadata
     assert callable(uc2_cam_py.list_devices)
     assert callable(uc2_cam_py.run_connection_test)
     assert uc2_cam_py.__file__  # loaded from an installed location
+
+
+def test_the_camera_process_reports_the_same_version() -> None:
+    """``uc2_cam_worker --version`` names the version of the package it was installed with."""
+    import subprocess
+
+    from uc2_cam_py import _process
+
+    out = subprocess.run([_process.worker_path(), "--version"], capture_output=True, text=True,
+                         check=True, timeout=10)
+    assert out.stdout.strip() == f"uc2_cam_worker {uc2_cam_py.__version__}"
 
 
 def test_list_devices_returns_list() -> None:

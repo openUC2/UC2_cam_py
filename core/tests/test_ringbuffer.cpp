@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "UC2_RingBuff.h"
+#include "UC2Version.h"
 
 using hik::PixelDepth;
 using hik::RingBuffer;
@@ -209,6 +210,7 @@ TEST_CASE("the session header is self-describing", "[ring]")
     CHECK(hdr.formatVersion == hik::kFormatVersion);
     CHECK(hdr.layoutVersion == hik::kLayoutVersion);
     CHECK(hdr.headerBytes == sizeof(hik::UC2_SessionHeader));
+    CHECK(std::string(hdr.softwareVersion) == hik::version());
     CHECK(hdr.width == 12);
     CHECK(hdr.height == 5);
     CHECK(hdr.channels == 2);

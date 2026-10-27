@@ -181,6 +181,7 @@ private:
     std::set<uint32_t>                m_waiting;    ///< ids of calls waiting for a response
     std::map<uint32_t, ipc::Message>  m_replies;    ///< responses not yet picked up
     bool                              m_hello   = false;
+    std::string                       m_workerVersion;   ///< from the Hello, "" if it had none
     bool                              m_lost    = false;
     bool                              m_closing = false;
     std::shared_ptr<RingBuffer>       m_ring;       ///< attached ring of the current session

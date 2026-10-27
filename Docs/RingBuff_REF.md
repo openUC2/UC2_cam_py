@@ -180,7 +180,8 @@ Startzeiten. Er wird unverändert an den Anfang der Container-Datei kopiert.
 | `slotStride` | `uint64_t` | Payload-Abstand zwischen Slots (`frameBytes`, auf 64 B aufgerundet) |
 | `cameraId` | `char[64]` | NUL-terminiert, max. 63 Zeichen |
 | `comment` | `char[8192]` | NUL-terminiert, max. 8191 Zeichen |
-| `reserved2` | `uint8_t[120]` | — |
+| `softwareVersion` | `char[32]` | `uc2_cam_py`-Version, die die Sitzung geschrieben hat (`hik::version()`, z. B. `"1.0.0"`), NUL-terminiert. Offset 8328. In Dateien vor 1.0.0 Nullen, also leer: Das Feld lag dort in `reserved2`, darum gleiche `formatVersion` und `layoutVersion` |
+| `reserved2` | `uint8_t[88]` | — |
 
 > **Zeitanker:** Die Zeitstempel pro Frame sind monotonic, also unabhängig von NTP-Sprüngen und
 > Sommerzeit. Das Paar `startWallNs`/`startMonoNs` rechnet sie in absolute Zeit um:
@@ -587,7 +588,7 @@ Hinweise für Programme, die diese Dateien lesen:
 
 Enthält `format` (`"uc2rb"`), `formatVersion`, `layoutVersion`, `container`, `headerBytes`,
 `frameHeaderBytes`, `width`, `height`, `channels`, `dtype`, `frameBytes`, `slotCount`,
-`cameraId`, `comment`, `startTimeUtc`, `startWallNs` und `startMonoNs`. Damit lässt sich eine
+`cameraId`, `comment`, `softwareVersion`, `startTimeUtc`, `startWallNs` und `startMonoNs`. Damit lässt sich eine
 Aufnahme identifizieren, ohne das Binärformat zu parsen. Scheitert das Schreiben, gibt es nur eine
 Warnung; die Aufnahme läuft weiter.
 
@@ -727,7 +728,7 @@ Ein angehängter Ring liest nur: `beginWrite`, `writeFrame`, `startRecording`, `
 `stopRecording()` (auch aus dem Destruktor) lässt das `recording`-Flag des Producers in Ruhe.
 Geometrie, `frameBytes()` und `sessionHeader()` kommen aus der geprüften Kopie;
 `sessionHeader()` überschreibt die Geometriefelder der geteilten Kopie und terminiert
-`cameraId`/`comment`, was auch immer die Region inzwischen enthält. `acquireSlot()` begrenzt
+`cameraId`/`comment`/`softwareVersion`, was auch immer die Region inzwischen enthält. `acquireSlot()` begrenzt
 `nbytes` auf `frameBytes`.
 
 Getestet in `test_ringbuffer_shm.cpp` (`[shm]`, `[shm][mt]`): Siegel und EPERM bei `ftruncate`,

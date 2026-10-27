@@ -1,5 +1,6 @@
 #include "UC2_RingBuff.h"
 
+#include "UC2Version.h"
 #include "hikLog.h"
 
 #include <fcntl.h>
@@ -716,6 +717,7 @@ bool RingBuffer::configure()
     m_header->slotStride    = slotStride;
     copyFixed(m_header->cameraId, sizeof(m_header->cameraId), m_cameraId);
     copyFixed(m_header->comment,  sizeof(m_header->comment),  m_comment);
+    copyFixed(m_header->softwareVersion, sizeof(m_header->softwareVersion), hik::version());
 
     m_control = new (region + m_controlOffset) UC2_Control();
 
@@ -1568,6 +1570,7 @@ UC2_SessionHeader RingBuffer::sessionHeader() const
         copy.slotStride = m_slotStride;
         copy.cameraId[sizeof(copy.cameraId) - 1] = '\0';
         copy.comment[sizeof(copy.comment) - 1]   = '\0';
+        copy.softwareVersion[sizeof(copy.softwareVersion) - 1] = '\0';
     }
     return copy;
 }
@@ -1991,6 +1994,7 @@ bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header) const
        << "  \"slotCount\": " << header.slotCount << ",\n"
        << "  \"cameraId\": \"" << jsonEscape(header.cameraId) << "\",\n"
        << "  \"comment\": \"" << jsonEscape(header.comment) << "\",\n"
+       << "  \"softwareVersion\": \"" << jsonEscape(header.softwareVersion) << "\",\n"
        << "  \"startTimeUtc\": \"" << formatWallClock(header.startWallNs) << "\",\n"
        << "  \"startWallNs\": " << header.startWallNs << ",\n"
        << "  \"startMonoNs\": " << header.startMonoNs << "\n"

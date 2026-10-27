@@ -47,12 +47,12 @@ def test_img_meta_data_is_frozen_and_complete() -> None:
     assert names == [
         "magic", "format_version", "header_bytes", "width", "height", "channels", "depth",
         "frame_bytes", "slot_count", "layout_version", "start_wall_ns", "start_mono_ns",
-        "slot_stride", "camera_id", "comment",
+        "slot_stride", "camera_id", "comment", "software_version",
     ]
     meta = ImgMetaData(magic="UC2RB", format_version=1, header_bytes=8448, width=4, height=2,
                        channels=1, depth=2, frame_bytes=16, slot_count=2, layout_version=1,
                        start_wall_ns=1_000, start_mono_ns=100, slot_stride=64, camera_id="X-1",
-                       comment="{}")
+                       comment="{}", software_version="1.0.0")
     assert meta.dtype == "uint16"
     assert meta.wall_time_ns(150) == 1_050
     assert dataclasses.asdict(meta)["camera_id"] == "X-1"

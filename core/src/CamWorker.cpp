@@ -5,6 +5,7 @@
 #include "HikCamera.h"
 #include "MvsCamera.h"
 #include "SimCamera.h"
+#include "UC2Version.h"
 #include "hikLog.h"
 
 #include <signal.h>
@@ -565,7 +566,7 @@ int Worker::run()
     setLogSink(&socketSink, &g_log);
 
     Message hello(Kind::Event, Op::Hello, 0);
-    hello.putU32(ipc::kProtocolVersion).putI64(static_cast<int64_t>(::getpid()));
+    hello.putU32(ipc::kProtocolVersion).putI64(static_cast<int64_t>(::getpid())).putStr(version());
     if (!ipc::sendMessage(m_sock, hello))
     {
         setLogSink(nullptr, nullptr);

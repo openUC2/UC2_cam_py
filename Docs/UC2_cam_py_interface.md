@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 0.2.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 1.0.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -238,6 +238,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 | `slot_stride` | `int` | Bytes between slot payloads |
 | `camera_id` | `str` | `"<model>-<serial>"` |
 | `comment` | `str` | JSON with the camera settings at the session start (vendor, model, serial, exposure, gain, frame rate, binning, ROI, pixel pitch, ...) |
+| `software_version` | `str` | Version of `uc2_cam_py` that wrote the session, e.g. `"1.0.0"` (`""` in files written before 1.0.0) |
 
 | Member | Description |
 |---|---|
@@ -339,6 +340,9 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 (installed next to the extension module) and opens the camera in it. Linux only.
 
 - **Visible.** `process_id` is its pid; in `ps`/`top`/`htop` it is called `uc2cam-<serial>`.
+- **Same version.** The camera process reports its version when it starts. If it differs from
+  the package's (a stale `uc2_cam_worker` from another build), `create_camera` raises
+  `RuntimeError` naming both versions. `uc2_cam_worker --version` prints the version by hand.
 - **Images.** Every session's ring buffer is a sealed memfd that the camera process hands over;
   this process maps it and reads it zero-copy. `ImgData` keeps its mapping alive - also after
   `close()` and also after the camera process has died. Nothing the camera process does can

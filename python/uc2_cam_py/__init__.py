@@ -41,7 +41,9 @@ from .data import ImgData, ImgMetaData
 from .hikrobot import HikRobotCamera
 from .simulated import SimulatedCamera
 
-__version__ = "0.2.0"
+#: Version of the package (SemVer, from the file VERSION). Taken from the compiled
+#: module, so it is the version of the C++ code actually loaded.
+__version__: str = _hik.__version__
 
 __all__ = [
     "create_camera",

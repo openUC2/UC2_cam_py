@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `7679220` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Flush-Fehler behoben, das simulierte Bild hat Offset und
-Schrotrauschen (oberster Eintrag). Davor: jede Kamera in einem eigenen Prozess
-(`uc2_cam_worker`, Ring Buffer in Shared Memory), SDK im Projekt, Speichern zur Laufzeit umschalten.
+**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `bda6bf3` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Versionierung eingeführt, Version 1.0.0 (oberster Eintrag). Davor:
+Flush-Fehler behoben, Offset und Schrotrauschen im simulierten Bild, jede Kamera in einem
+eigenen Prozess (`uc2_cam_worker`, Ring Buffer in Shared Memory).
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,74 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
+### Versionierung eingeführt: SemVer, eine Quelle `VERSION`, Version 1.0.0 — 2026-10-27
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27. Vom Nutzer
+  entschieden:
+  - SemVer `MAJOR.MINOR.PATCH`, Start bei **1.0.0** (statt 1.0.0.0).
+  - Umfang: die Version in jeder Aufnahme, eine Versionsprüfung des Kamera-Prozesses,
+    `CHANGELOG.md` und ein Git-Tag.
+- **Vorher:** `0.2.0` stand von Hand an vier Stellen. CMake und C++ kannten keine Version, und
+  es gab keine Tags.
+- **Eine Quelle:** Die Datei `VERSION` (`1.0.0`).
+  - `core/cmake/UC2Version.cmake` liest sie vor `project()` (in beiden Konfigurationswegen),
+    prüft das Format und setzt `UC2_CAM_VERSION`. Über `CMAKE_CONFIGURE_DEPENDS` konfiguriert
+    ein Build nach einer Änderung von selbst neu.
+  - `pyproject.toml`: `dynamic = ["version"]` mit `scikit_build_core.metadata.regex` auf
+    `VERSION`; `VERSION` steht auch in den uv-cache-keys. In `uv.lock` entfällt dadurch die
+    feste Version des Projekts (bei dynamischer Version erwartet).
+- **C++:** `hik::version()` (`UC2Version.h`, `src/Version.cpp`). Nur `Version.cpp` bekommt die
+  Definition, ein Versionswechsel übersetzt also nur diese Datei.
+- **Python:** `_hik.__version__`; `uc2_cam_py.__version__` wird daraus übernommen, also die
+  Version des geladenen C++-Codes.
+- **`uc2_cam_worker --version`** gibt `uc2_cam_worker 1.0.0` aus.
+- **Aufnahmen:**
+  - `UC2_SessionHeader::softwareVersion` (`char[32]`, Offset 8328, aus `reserved2`, das von 120
+    auf 88 B schrumpft). Größe 8448 sowie `formatVersion` und `layoutVersion` bleiben gleich;
+    ältere Dateien liefern `""`.
+  - Die Version steht auch in der JSON-Begleitdatei (`softwareVersion`) und in
+    `ImgMetaData.software_version` (neues Pflichtfeld nach `comment`).
+- **Versionsprüfung:**
+  - Das Hallo trägt jetzt die Softwareversion; `kProtocolVersion` 1 → 2.
+  - `RemoteCamera` vergleicht sie mit `hik::version()`. Bei Abweichung oder fehlender Version
+    beendet sie den Prozess und wirft `runtime_error` (in Python `RuntimeError`) mit beiden
+    Versionen und dem Hinweis „reinstall uc2_cam_py“.
+  - Dabei setzt sie `m_closing`, damit keine zweite, irreführende ERR „camera lost“ erscheint.
+    Gefunden bei der Gegenprobe mit einem echten 1.0.1-Worker.
+- **Tests:**
+  - C++: Version im Kopf (`[ring]`, `[stream]`, auch in der JSON-Datei), Hallo mit Version
+    (`RawWorker`), neuer Test „a camera process of another version is refused“.
+  - Der Test-Helfer `core/tests/fake_worker.cpp` (Target `uc2_cam_fake_worker`) wird über
+    `UC2_FAKE_WORKER_VERSION`/`UC2_FAKE_WORKER_PIDFILE` gesteuert. Geprüft werden: falsche
+    Version, fehlende Version, kein übrig gebliebener Prozess, keine ERR.
+  - Python: `__version__` = `VERSION` = `_hik.__version__` = Paket-Metadaten; neu:
+    `uc2_cam_worker --version`; `software_version` in `get_image_info()`, im Dateikopf und in
+    der JSON-Datei; `test_api_surface` angepasst.
+- **Doku:**
+  - `CHANGELOG.md` (neu, Keep a Changelog) und README-Abschnitt „Versioning“ (Regeln, Quelle,
+    Release-Ablauf); `VERSION`/`CHANGELOG.md` im README-Baum.
+  - Interface-Doku: 1.0.0, `software_version`, Versionsprüfung in §7.9.
+  - `RingBuff_REF.md`: Kopftabelle, Sidecar.
+- **Verifikation:**
+  - `uv run all_tests` → C++ 138/138, Python 185 passed / 21 skipped.
+  - `build/core` 134/134; `ctest --preset tsan` und `--preset asan` jeweils 138/138.
+  - Ruff sauber, Pyright 0 Fehler. Das Wheel heißt `uc2_cam_py-1.0.0-cp312-…`, `METADATA`
+    `Version: 1.0.0`.
+  - Probe „eine Quelle“: `VERSION` auf 1.0.1 → CMake konfiguriert selbst neu, übersetzt wird
+    nur `Version.cpp`, Python, `_hik`, Metadaten und Worker melden 1.0.1; danach zurück auf
+    1.0.0.
+  - Gegenprobe: Ein echter 1.0.1-Worker gegen die 1.0.0-Bibliothek ergibt einen `RuntimeError`
+    mit klarer Meldung.
+- **Hinweis TSan:** Wer die Testbinary direkt unter TSan startet, braucht `TSAN_OPTIONS` mit
+  `tools/sanitizers/tsan.supp` wie im Preset. Sonst meldet der absichtlich „reißende“
+  Seqlock-Test `test_ringbuffer_mt.cpp` Races.
+- **Offen:** Git-Tag `v1.0.0` nach dem Commit; Branch klären (aktiv ist `transfer_to_processes`).
+
+### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`bda6bf3`)
 
 - **Plan:** `~/.claude/plans/nested-wandering-jellyfish.md`, freigegeben 2026-10-27. Vom Nutzer
   entschieden: Das Rauschen folgt der Poisson-Statistik über die Normalnäherung N(λ, λ); der
@@ -330,8 +395,10 @@ tests/                   pytest-Tests
 Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, braucht Kamera),
                          RingBuffExample.cpp (ohne Kamera); nur Top-Level-Build, HIK_BUILD_EXAMPLES
 Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
+VERSION                  die Versionsnummer (SemVer), einzige Quelle; CHANGELOG.md je Version
 CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
-core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING
+core/cmake/              HikTooling.cmake: Schalter HIK_SANITIZERS, HIK_PROFILING;
+                         UC2Version.cmake: liest VERSION → UC2_CAM_VERSION
 tools/                   analyze.sh (valgrind/perf), Suppressions für Sanitizer und valgrind,
                          devtasks/ (uv run main | py_tests | c_tests | all_tests | fetch_mvs)
 External/hik/            HikRobot-Pakete (Zips) und daraus das SDK in MVS/ — beides nicht in Git,
@@ -394,7 +461,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 205 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 206 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -409,13 +476,13 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 136 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 138 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 132 Tests (ohne [hardware])
+ctest --test-dir build/core       # 134 Tests (ohne [hardware])
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 

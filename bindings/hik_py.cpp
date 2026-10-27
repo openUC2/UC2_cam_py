@@ -29,6 +29,7 @@
 #include "MvsCamera.h"
 #include "RemoteCamera.h"
 #include "SimCamera.h"
+#include "UC2Version.h"
 #include "hikLog.h"
 
 namespace py = pybind11;
@@ -181,6 +182,8 @@ py::dict headerDict(const hik::UC2_SessionHeader& h)
     d["slot_stride"]    = h.slotStride;
     d["camera_id"]      = std::string(h.cameraId);
     d["comment"]        = std::string(h.comment);
+    d["software_version"] = std::string(h.softwareVersion,
+                                        strnlen(h.softwareVersion, sizeof(h.softwareVersion)));
     return d;
 }
 
@@ -330,6 +333,7 @@ void bindCameraApi(py::class_<Cam, Holder>& cls)
 PYBIND11_MODULE(_hik, m)
 {
     m.doc() = "Low-level bindings of the uc2_cam_py camera core (use uc2_cam_py.create_camera).";
+    m.attr("__version__") = hik::version();   // from the file VERSION, compiled in
 
     // --- Devices -------------------------------------------------------------
     py::class_<hik::DeviceInfo>(m, "DeviceInfo",

@@ -39,6 +39,7 @@ UC2_cam_py/
 │   │   ├── MvsCamera.h       #     thin MVS SDK wrapper (enumerate/open/nodes)
 │   │   ├── CaptureApp.h      #     connection test shared by CLI + Python
 │   │   ├── ImageWindow.h     #     minimal X11 preview window
+│   │   ├── UC2Version.h      #     hik::version(), from the file VERSION
 │   │   └── hikLog.h          #     logging with a replaceable sink
 │   ├── src/                  #   library sources
 │   ├── worker/               #   uc2_cam_worker: main() of the camera process
@@ -61,6 +62,8 @@ UC2_cam_py/
 ├── Docs/                     # interface spec, ring-buffer reference, tooling
 ├── CMakePresets.json         # build variants debug | profile | asan | tsan
 ├── pyproject.toml            # Python packaging (scikit-build-core + pybind11, uv)
+├── VERSION                   # the version number, the only place it is written down
+├── CHANGELOG.md              # what changed in which version
 └── README.md
 ```
 
@@ -336,6 +339,35 @@ The C++ unit tier (ring buffer, camera helpers, logging, the simulated camera
 end to end, error-code mapping, headless `ImageWindow`, SDK init) needs no
 camera. The `[hardware]` tests (built by the presets) open a HikRobot camera
 through `MvsCamera` and `HikCamera` and SKIP themselves when none is connected.
+
+## Versioning
+
+`uc2_cam_py` follows [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
+
+- **MAJOR** for a change that breaks existing users: the Python interface
+  (`Docs/UC2_cam_py_interface.md`) or a `.uc2rb` file layout that older readers cannot read.
+- **MINOR** for new functions, options or vendors that leave existing code working.
+- **PATCH** for bug fixes.
+
+The number is written down in one place only, the file [`VERSION`](VERSION). Everything else
+derives from it:
+
+| Where | How it gets there |
+|---|---|
+| package metadata (`pip show`, wheel name) | `pyproject.toml` reads `VERSION` (`[tool.scikit-build.metadata.version]`) |
+| C++ `hik::version()`, `_hik.__version__` | `core/cmake/UC2Version.cmake` reads `VERSION`; only `core/src/Version.cpp` sees it |
+| `uc2_cam_py.__version__` | taken from `_hik`, so it is the version of the C++ code actually loaded |
+| `uc2_cam_worker --version` | the camera process; `create_camera` refuses one of another version |
+| every recording | `softwareVersion` in the `.uc2rb` header and the `.json` sidecar, `ImgMetaData.software_version` |
+
+A build picks up a changed `VERSION` by itself (CMake re-configures, uv rebuilds).
+
+**Releasing a version:**
+
+1. Set the new number in `VERSION`.
+2. Add a section to [`CHANGELOG.md`](CHANGELOG.md) (move the "Unreleased" entries there).
+3. `uv pip install -e . --no-build-isolation`, then `uv run all_tests`.
+4. Commit, then tag the commit: `git tag -a vX.Y.Z -m "uc2_cam_py X.Y.Z"`.
 
 ## Debugging the C++ code from VS Code
 

@@ -2,7 +2,8 @@
 //
 // Started by RemoteCamera (one process per camera) with its end of a
 // SOCK_SEQPACKET socket pair on file descriptor 3. Not meant to be run by hand;
-// everything it does is described in CamWorker.h.
+// everything it does is described in CamWorker.h. `uc2_cam_worker --version`
+// prints the version it was built as.
 
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -12,19 +13,26 @@
 #include <cstring>
 
 #include "CamWorker.h"
+#include "UC2Version.h"
 
 int main(int argc, char** argv)
 {
     int fd = 3;
     for (int i = 1; i < argc; ++i)
     {
+        if (std::strcmp(argv[i], "--version") == 0)
+        {
+            std::printf("uc2_cam_worker %s\n", hik::version());
+            return 0;
+        }
         if (std::strcmp(argv[i], "--fd") == 0 && i + 1 < argc)
         {
             fd = std::atoi(argv[++i]);
         }
         else
         {
-            std::fprintf(stderr, "usage: %s [--fd N]   (started by uc2_cam_py, not by hand)\n", argv[0]);
+            std::fprintf(stderr, "usage: %s [--fd N] | --version   (started by uc2_cam_py, not by hand)\n",
+                         argv[0]);
             return 2;
         }
     }

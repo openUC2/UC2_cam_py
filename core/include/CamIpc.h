@@ -25,7 +25,7 @@ namespace hik {
 namespace ipc {
 
 static const uint32_t kMagic           = 0x43324355u;   ///< "UC2C" in memory order
-static const uint16_t kProtocolVersion = 1;
+static const uint16_t kProtocolVersion = 2;   ///< 2: Hello carries the software version
 static const size_t   kHeadBytes       = 16;
 static const size_t   kMaxMessageBytes = 64 * 1024;     ///< far above the largest message (an 8 KiB comment)
 
@@ -41,7 +41,7 @@ enum class Kind : uint8_t
 enum class Op : uint16_t
 {
     // Events
-    Hello = 1,          ///< u32 protocol version, i64 pid -- first message of the camera process
+    Hello = 1,          ///< u32 protocol version, i64 pid, str software version -- first message of the camera process
     Log,                ///< u32 level, str message
     Ring,               ///< i64 generation; the ring's memfd as SCM_RIGHTS
 

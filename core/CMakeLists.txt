@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
-project(HikCamCore LANGUAGES CXX)
+# UC2_CAM_VERSION from the file VERSION in the repository root (a no-op when
+# the top-level project already included it).
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/UC2Version.cmake")
+project(HikCamCore VERSION ${UC2_CAM_VERSION} LANGUAGES CXX)
 
 # When built stand-alone, pick sensible defaults. When added via the top-level
 # project (add_subdirectory) these are already set by the parent.
@@ -111,9 +114,14 @@ add_library(${HIK_CAM_CORE_TARGET_NAME} STATIC
     src/SimPattern.cpp
     src/CamIpc.cpp
     src/CamWorker.cpp
-    src/RemoteCamera.cpp)
+    src/RemoteCamera.cpp
+    src/Version.cpp)
 
 set_target_properties(${HIK_CAM_CORE_TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Only this one file sees the version number, so a new version recompiles just it.
+set_source_files_properties(src/Version.cpp PROPERTIES
+    COMPILE_DEFINITIONS "UC2_CAM_VERSION=\"${UC2_CAM_VERSION}\"")
 
 # The include dirs and the MVS import lib are part of the public interface so
 # consumers (CLI, Python module) inherit them.

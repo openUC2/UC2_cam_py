@@ -45,10 +45,16 @@ target_link_libraries(hikcam_core_tests PRIVATE
     ${HIK_CAM_CORE_TARGET_NAME}
     Catch2::Catch2WithMain)
 
-# test_worker.cpp starts the real camera process.
-add_dependencies(hikcam_core_tests uc2_cam_worker)
+# test_worker.cpp starts the real camera process, and a stand-in that reports
+# the wrong software version (fake_worker.cpp).
+add_executable(uc2_cam_fake_worker fake_worker.cpp)
+target_link_libraries(uc2_cam_fake_worker PRIVATE ${HIK_CAM_CORE_TARGET_NAME})
+set_target_properties(uc2_cam_fake_worker PROPERTIES BUILD_RPATH "${MVS_LIB_DIR}")
+
+add_dependencies(hikcam_core_tests uc2_cam_worker uc2_cam_fake_worker)
 target_compile_definitions(hikcam_core_tests PRIVATE
-    UC2_CAM_WORKER_PATH="$<TARGET_FILE:uc2_cam_worker>")
+    UC2_CAM_WORKER_PATH="$<TARGET_FILE:uc2_cam_worker>"
+    UC2_CAM_FAKE_WORKER_PATH="$<TARGET_FILE:uc2_cam_fake_worker>")
 
 # Register each Catch2 TEST_CASE with CTest so `ctest` lists them individually.
 #

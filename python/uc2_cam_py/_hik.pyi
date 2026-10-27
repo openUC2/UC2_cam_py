@@ -9,6 +9,9 @@ them in sync with bindings/hik_py.cpp. This is the low-level layer - use
 
 import numpy as np
 
+#: Version of the compiled C++ core (the file VERSION), e.g. "1.0.0".
+__version__: str
+
 # --- Devices -----------------------------------------------------------------
 
 class DeviceInfo:
