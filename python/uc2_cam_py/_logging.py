@@ -173,7 +173,7 @@ def flush(timeout: float = 2.0) -> bool:
     if _thread is None:
         return True
     marker = next(_flush_ids)
-    _hik._emit_log(logging.ERROR, f"{_FLUSH_PREFIX}{marker}")
+    _hik._emit_flush_marker(f"{_FLUSH_PREFIX}{marker}")
     with _flush_cv:
         ok = _flush_cv.wait_for(lambda: marker in _flush_seen, timeout)
         _flush_seen.discard(marker)

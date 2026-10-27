@@ -387,6 +387,10 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
   buffer path.
 - **Image.** A Gaussian spot walks row by row over a 5 × 4 grid of the sensor.
   `cam.spot_position(sequence)` returns its exact centre for every image.
+  - Spot height 54 000 (Mono16) or 180 (Mono8), on a constant offset of 10 % of that height.
+  - Shot noise: every pixel follows the Poisson statistics (variance = mean) in their normal
+    approximation. The noise is seeded with the image number of the session, so a session
+    always produces the same images.
 - **Settable:** exposure, gain, frame rate, binning {1, 2, 4} and ROI. **Not settable:**
   trigger. Exposure and gain do not change the image.
 - **Fixed values:** pixel pitch 5.86 µm, serial `SIM-0001` (or the given serial), index 0.

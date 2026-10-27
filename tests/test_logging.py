@@ -62,6 +62,34 @@ def test_incomplete_logger_is_rejected() -> None:
         uc2_cam_py.create_camera(vendor="Simulated", store_image_data=False, logger=NoDebug())
 
 
+def test_flush_survives_a_full_log_queue() -> None:
+    """The flush marker is never dropped, not even when the C++ log queue is full."""
+    stalled = threading.Event()
+    release = threading.Event()
+
+    class Stalling:
+        def error(self, m): pass
+        def warning(self, m): pass
+        def info(self, m): pass
+
+        def debug(self, m):
+            if m == "stall":            # holds the forwarder thread until released
+                stalled.set()
+                release.wait(10)
+
+    _logging.set_active_logger(_logging.LoggerAdapter(Stalling()))
+    try:
+        _hik._emit_log(logging.DEBUG, "stall")
+        assert stalled.wait(5), "the forwarder did not pick up the first message"
+        for _ in range(10_100):         # the queue holds 10 000 messages; the rest is dropped
+            _hik._emit_log(logging.DEBUG, "fill")
+        threading.Timer(0.2, release.set).start()
+        assert _logging.flush(5.0)
+    finally:
+        release.set()
+        _logging.set_active_logger(None)
+
+
 def test_camera_thread_does_not_need_the_gil(open_camera) -> None:
     """While a Python thread hogs the GIL, the camera keeps delivering frames."""
     cam = open_camera(start_on_init=True, frame_rate=100.0)

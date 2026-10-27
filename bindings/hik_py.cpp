@@ -484,6 +484,21 @@ PYBIND11_MODULE(_hik, m)
           py::arg("level"), py::arg("message"),
           "Emit a message through the C++ logging path (for tests).");
 
+    m.def("_emit_flush_marker",
+          [](const std::string& text) {
+              LogQueue& q = logQueue();
+              {
+                  std::lock_guard<std::mutex> lk(q.mtx);
+                  // Past the size limit and the level filter on purpose: a dropped
+                  // marker would leave _logging.flush() waiting for nothing. Every
+                  // message logged before this call is already queued ahead of it.
+                  q.items.emplace_back(static_cast<int>(hik::LogLevel::Error), text, 0);
+              }
+              q.cv.notify_one();
+          },
+          py::arg("text"),
+          "Queue a flush marker for _logging.flush(); never dropped, even when the queue is full.");
+
     // --- Images --------------------------------------------------------------
     py::class_<ImageRef>(m, "ImageHandle",
         "One pinned ring-buffer slot. Its `array` is a zero-copy, read-only view;\n"

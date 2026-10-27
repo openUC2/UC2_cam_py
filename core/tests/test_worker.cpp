@@ -27,6 +27,7 @@
 #include "CamIpc.h"
 #include "RemoteCamera.h"
 #include "SimPattern.h"
+#include "test_image_helpers.h"
 
 using hik::CameraBase;
 using hik::RemoteCamera;
@@ -88,22 +89,6 @@ bool eventually(F cond, int timeoutMs)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return cond();
-}
-
-/// Intensity-weighted centroid of a Mono16 image.
-void centroid(const uint16_t* img, int64_t w, int64_t h, double& cx, double& cy)
-{
-    double sum = 0, sx = 0, sy = 0;
-    for (int64_t y = 0; y < h; ++y)
-    {
-        for (int64_t x = 0; x < w; ++x)
-        {
-            const double v = img[y * w + x];
-            sum += v; sx += v * x; sy += v * y;
-        }
-    }
-    cx = sx / sum;
-    cy = sy / sum;
 }
 
 struct TempDir
@@ -261,7 +246,7 @@ TEST_CASE("a simulated camera runs in its own process", "[worker]")
     CHECK(first.header.width == 400);
     CHECK(first.handle.nbytes() == 400u * 200u * 2u);
     double cx = 0, cy = 0, wantX = 0, wantY = 0;
-    centroid(reinterpret_cast<const uint16_t*>(first.handle.data()), 400, 200, cx, cy);
+    testimg::spotCentroid(reinterpret_cast<const uint16_t*>(first.handle.data()), 400, 200, cx, cy);
     REQUIRE(cam->spotPositionFor(first.handle.sequence(), wantX, wantY));
     if (first.handle.stillValid())   // 8 slots at 100 fps: valid for 80 ms
     {

@@ -13,10 +13,15 @@ from conftest import BUFFER, wait_for_frames
 
 
 def _centroid(img: np.ndarray):
+    """Centre of the spot. The image has an offset and noise, so only the spot is weighed:
+    background = median, weight = max(v - background - 0.2 * height, 0). Unbiased for a
+    symmetric spot."""
     img = img.astype(np.float64)
-    total = img.sum()
+    bg = np.median(img)
+    weight = np.clip(img - bg - 0.2 * (img.max() - bg), 0.0, None)
+    total = weight.sum()
     ys, xs = np.indices(img.shape)
-    return float((img * xs).sum() / total), float((img * ys).sum() / total)
+    return float((weight * xs).sum() / total), float((weight * ys).sum() / total)
 
 
 def test_nothing_before_the_first_start(camera) -> None:
@@ -85,10 +90,12 @@ def test_every_slot_can_be_read_after_a_full_lap(sim_camera) -> None:
 def test_view_survives_close(open_camera) -> None:
     cam = open_camera(start_on_init=True)
     wait_for_frames(cam, 2)
+    cam.stop()                               # nothing can overwrite the slot any more
     img = cam.get_last_image()
+    before = img.data.copy()
     cam.close()
     del cam
-    assert int(img.data.max()) == 60000      # the ring memory is still alive and intact
+    assert np.array_equal(img.data, before)  # the ring memory is still alive and intact
 
 
 def test_overwritten_slot_is_reported_invalid(open_camera) -> None:
@@ -109,6 +116,27 @@ def test_image_content_matches_the_simulated_spot(sim_camera) -> None:
     ex, ey = sim_camera.spot_position(img.sequence)
     assert cx == pytest.approx(ex, abs=0.5)
     assert cy == pytest.approx(ey, abs=0.5)
+
+
+@pytest.mark.parametrize("pixel_format", ["Mono16", "Mono8"])
+def test_simulated_image_has_an_offset_with_shot_noise(open_camera, pixel_format) -> None:
+    cam = open_camera(pixel_format=pixel_format)
+    cam.start()
+    wait_for_frames(cam, 2)
+    cam.stop()
+    img = cam.get_last_image()
+    data = img.data.astype(np.float64)
+    ex, ey = cam.spot_position(img.sequence)
+    background = float(np.median(data))
+    # Mean of the 3 x 3 pixels at the spot centre: the maximum would be the top of the noise.
+    x, y = round(ex), round(ey)
+    height = float(data[y - 1 : y + 2, x - 1 : x + 2].mean()) - background
+    assert background == pytest.approx(0.1 * height, rel=0.1)    # offset: 10 % of the spot height
+
+    # Away from the spot (a third of the shorter side, several spot widths) only the offset is left.
+    ys, xs = np.indices(data.shape)
+    far = data[np.hypot(xs - ex, ys - ey) > min(data.shape) / 3]
+    assert far.var() == pytest.approx(far.mean(), rel=0.05)      # shot noise: variance = mean
 
 
 def test_image_content_with_roi_and_binning(sim_camera) -> None:

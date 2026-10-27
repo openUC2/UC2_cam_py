@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `1be0de2` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Jede Kamera läuft in einem eigenen Prozess (`uc2_cam_worker`), der
-Ring Buffer liegt dafür in Shared Memory (Eintrag 2026-10-27 unten). Davor: SDK im Projekt,
-Speichern zur Laufzeit umschalten, Kurzbefehle `uv run …`.
+**Stand:** 2026-10-27 · Branch `transfer_to_processes` · Basis-Commit `7679220` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Flush-Fehler behoben, das simulierte Bild hat Offset und
+Schrotrauschen (oberster Eintrag). Davor: jede Kamera in einem eigenen Prozess
+(`uc2_cam_worker`, Ring Buffer in Shared Memory), SDK im Projekt, Speichern zur Laufzeit umschalten.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,55 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Jede Kamera in einem eigenen Prozess (`uc2_cam_worker`), Ring Buffer in Shared Memory — 2026-10-27
+### Flush-Marke wird nie verworfen · Offset und Poisson-Rauschen im simulierten Bild — 2026-10-27
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/nested-wandering-jellyfish.md`, freigegeben 2026-10-27. Vom Nutzer
+  entschieden: Das Rauschen folgt der Poisson-Statistik über die Normalnäherung N(λ, λ); der
+  Offset beträgt 10 % der Spot-Höhe, und die Spot-Höhe sinkt, damit nichts abgeschnitten wird.
+- **Flush (§11.3 P3):**
+  - Ursache: `flush()` reihte seine Marke über `_emit_log()` ein. `queueSink` verwirft jede
+    Meldung, solange die Queue `kLogQueueMax` = 10 000 Einträge hat.
+  - Fix: Das neue Binding `_hik._emit_flush_marker(text)` hängt die Marke direkt an die
+    `LogQueue`, vorbei am Limit und am Level-Filter. `_logging.flush()` benutzt es.
+  - Neuer Test `test_flush_survives_a_full_log_queue` (deterministisch: Der Forwarder hängt,
+    die Queue läuft über). Er ist vor dem Fix fehlgeschlagen und danach grün. Die 25er-Schleife
+    über `tests/test_logging.py` hatte danach 0 Fehlschläge.
+- **Simulation:**
+  - `sim::renderNoisySpot(…, offset, seed)` in `SimPattern.h/.cpp`: λ = Offset + Spotwert,
+    gezogen aus N(λ, λ) (`std::mt19937` + `normal_distribution<float>`), gerundet und auf den
+    Wertebereich begrenzt. Die Gauß-Profile teilt sie über einen internen Helfer mit
+    `renderSpot()`, das rauschfrei bleibt (`Examples/RingBuffExample.cpp`, exakte Tests).
+  - `SimCamera::run()`: Spot-Höhe Mono16 54 000 (vorher 60 000), Mono8 180 (vorher 240),
+    Offset 10 % davon (`kOffsetRatio`). Seed = Bildnummer der Sitzung, die Bilder sind also
+    reproduzierbar. `spotPositionFor()` bleibt exakt.
+  - Doku: `SimCamera.h`, `SimPattern.h`, `simulated.py`, `Docs/UC2_cam_py_interface.md` §8.
+- **Tests:**
+  - Neuer Header `core/tests/test_image_helpers.h`: `spotCentroid()` (Hintergrund = Median,
+    Gewicht = max(v − Hintergrund − 0,2·(Max − Hintergrund), 0)) und `backgroundStats()`.
+    Er ersetzt die lokalen `centroid()` in `test_simcamera.cpp` und `test_worker.cpp`.
+  - `tests/test_images.py`: `_centroid` genauso; `test_view_survives_close` vergleicht nach
+    `stop()` + `close()` mit einer Kopie statt `max() == 60000`.
+  - Neu: C++ `renderNoisySpot adds an offset with shot noise` (Mittelwert und Varianz ≈ Offset
+    für Mono16 und Mono8, Schwerpunkt, Seed, Begrenzung) und `the simulated image has an offset
+    with shot noise`. Python `test_simulated_image_has_an_offset_with_shot_noise[Mono16|Mono8]`.
+  - **Abweichung vom Plan:** Der Python-Test misst die Spot-Höhe als Mittelwert der 3×3 Pixel an
+    der Spot-Position, nicht als Max − Median. Bei Mono8 (σ = 14 an der Spitze) läge das
+    Maximum etwa 12 % zu hoch und damit außerhalb der ±10 %.
+- **Verifikation:**
+  - `uv run all_tests` → C++ 136/136, Python 184 passed / 21 skipped.
+  - `build/core` 132/132. TSan und ASan/UBSan jeweils `[sim],[worker]` grün.
+  - Ruff sauber, Pyright 0 Fehler.
+  - `UC2_DISPLAY_SECONDS=10 uv run py_tests -m display`: 2 passed.
+  - Gemessen bei 1920×1200 (x86): Mono16 und Mono8 halten 10 und 30 fps, im Kamera-Prozess wie
+    im Hauptprozess.
+- **Offen (Nutzer):** `uv run main` mit Debugfenster von Hand ansehen (Rauschen sichtbar?);
+  Laufzeit auf dem Pi 5 (Display-Test bei 1920×1200).
+
+### Jede Kamera in einem eigenen Prozess (`uc2_cam_worker`), Ring Buffer in Shared Memory — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`7679220`)
 
 - **Plan:** `.claude/currentPlan.md`, freigegeben 2026-10-25. Vom Nutzer entschieden:
   `separate_process` ist Standard und abschaltbar; die CPU-Affinität kommt später (→ Todos.md).
@@ -84,7 +130,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
   - Ruff sauber. Pyright: Paket 0 Fehler, nur mit `uvx pyright --pythonpath .venv/bin/python`
     (ohne findet es die venv nicht); die Testdateien haben wie auf HEAD Fehler aus dem
     `dict(**SIM_OPTIONS)`-Muster.
-- **Gefunden, nicht behoben (vorbestehend, außerhalb des Plans):**
+- **Gefunden, nicht behoben (vorbestehend, außerhalb des Plans; behoben 2026-10-27, Eintrag darüber):**
   `test_logging.py::test_no_deadlock_when_stopping_under_log_load` scheitert sporadisch an
   `assert _logging.flush()` (5/25 Läufe). Die Flush-Marke wird verworfen, wenn die Log-Queue
   (10 000) gerade voll ist. Nachbau im selben Prozess: 2/25, das Problem ist also älter.
@@ -97,7 +143,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### HikRobot-SDK im Projekt (`External/hik/MVS`), unabhängig von `/opt/MVS`; SDK 4.7 → 4.9 — 2026-10-25
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`1be0de2`)
 
 - **Pakete und Import:** Der Nutzer hat MVS 5.1.1 (Linux x86_64, aarch64, Windows) als Zips in
   `External/hik/` gelegt. `uv run fetch_mvs` (`tools/devtasks/src/uc2_devtasks/mvs.py`) entpackt
@@ -128,7 +174,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Speichern auf Platte zur Laufzeit umschalten — `cam.store_image_data = True/False` — 2026-10-25
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`f37014b`)
 
 - **Python:** `store_image_data` ist jetzt eine Property mit Setter (Entscheidung des Nutzers).
   Während der Aufnahme **nahtlos**: Ring, Sequenz, Live-Bild und Session laufen weiter;
@@ -160,7 +206,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Kurzbefehle `uv run main | py_tests | c_tests | all_tests`, venv repariert — 2026-10-23
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`0555f9f`)
 
 - uv 0.12 hat keinen Task-Runner; `uv run <name>` startet ein Skript aus `.venv/bin`. Die vier
   Befehle sind deshalb Konsolen-Skripte des Entwickler-Pakets `tools/devtasks`
@@ -180,7 +226,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Interaktives `python -m uc2_cam_py`, `list_cameras()`, Debugfenster wartet auf Bilder — 2026-10-23
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`0555f9f`)
 
 - **CLI** (`__main__.py`): `list_cameras()` → Tabelle `Index Name Vendor Connection Serial`
   (stdout), Index eingeben → `create_camera(vendor, serial, store_image_data=False,
@@ -348,7 +394,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 202 Tests, ~18 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 205 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -363,13 +409,13 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 134 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 136 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 130 Tests (ohne [hardware])
+ctest --test-dir build/core       # 132 Tests (ohne [hardware])
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
 
@@ -661,7 +707,7 @@ CTest-Punkt sind dessen Befunde **unverändert offen** — am Altcode wurde nich
 | **P4** | `LICENSE` fehlt, `pyproject.toml:11` deklariert aber MIT | Todo „soll MIT bleiben?" offen |
 | ~~P4~~ | ~~`CMakeLists.txt:10` setzt `HIK_BUILD_APP` mit `CACHE … FORCE`~~ | **erledigt 2026-09-24**: `HIK_BUILD_APP` entfällt, `HikStandAlone` liegt unter `Examples/` (Schalter `HIK_BUILD_EXAMPLES`, im Wheel OFF) |
 | **P4** | keine CI (`.github/` fehlt) | die 78 Tests liefen bisher nur lokal |
-| **P3** | `_logging.flush()` gibt sporadisch `False` (2 s gewartet): die Flush-Marke wird verworfen, wenn die Log-Queue voll ist (`queueSink`, 10 000 Einträge) | gefunden 2026-10-27; trifft `test_logging.py::test_no_deadlock_when_stopping_under_log_load` (~20 %); Fix-Vorschlag im Eintrag 2026-10-27 |
+| ~~P3~~ | ~~`_logging.flush()` gibt sporadisch `False` (2 s gewartet): die Flush-Marke wird verworfen, wenn die Log-Queue voll ist (`queueSink`, 10 000 Einträge)~~ | **erledigt 2026-10-27**: `_hik._emit_flush_marker()` reiht die Marke am Limit vorbei ein; Test `test_flush_survives_a_full_log_queue` |
 
 ---
 

@@ -13,6 +13,7 @@ namespace hik {
 namespace {
 
 const double kMaxFwhmPx  = 100.0;   ///< spot width (unbinned sensor pixels) on large sensors
+const double kOffsetRatio = 0.1;    ///< constant background, as a fraction of the spot height
 const double kMaxRate    = 200.0;   ///< "no frame-rate limit" runs at this rate
 const double kMinExpMs   = 0.01;
 const double kMaxExpMs   = 1000.0;
@@ -263,20 +264,26 @@ void SimCamera::run()
         roi     = m_roi;
         binning = m_binning;
     }
-    const PixelLayout lay   = pixelLayout(m_opt.pixelFormat);
-    const uint64_t    bytes = static_cast<uint64_t>(roi.width / binning) * (roi.height / binning)
-                              * itemSize(lay.depth);
-    const double      peak  = (lay.depth == PixelDepth::UInt16) ? 60000.0 : 240.0;
+    const PixelLayout lay    = pixelLayout(m_opt.pixelFormat);
+    const uint64_t    bytes  = static_cast<uint64_t>(roi.width / binning) * (roi.height / binning)
+                               * itemSize(lay.depth);
+    // Spot plus offset reach 59 400 (Mono16) or 198 (Mono8). The noise there
+    // (sigma 244 or 14) stays 25 or 4 sigma below the top of the range, so
+    // clipping is negligible.
+    const double      peak   = (lay.depth == PixelDepth::UInt16) ? 54000.0 : 180.0;
+    const double      offset = kOffsetRatio * peak;
     // One third of a grid cell keeps the spot clear of the sensor edges, so its
     // centroid is exact; on the default 1920 x 1200 sensor that is 100 px.
-    const double      fwhm  = std::min(kMaxFwhmPx,
-                                       std::min(m_opt.sensorWidth / 5.0, m_opt.sensorHeight / 4.0) / 3.0);
+    const double      fwhm   = std::min(kMaxFwhmPx,
+                                        std::min(m_opt.sensorWidth / 5.0, m_opt.sensorHeight / 4.0) / 3.0);
     std::vector<uint8_t> frame(static_cast<size_t>(bytes));
 
     auto next = std::chrono::steady_clock::now();
     for (uint64_t k = 0;; ++k)
     {
-        sim::renderSpot(frame.data(), lay.depth, roi, binning, spotPositionFor(k), fwhm, peak);
+        // Seeded with the frame number: a session always produces the same images.
+        sim::renderNoisySpot(frame.data(), lay.depth, roi, binning, spotPositionFor(k), fwhm, peak,
+                             offset, k);
         deliverFrame(frame.data(), bytes);
 
         next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(

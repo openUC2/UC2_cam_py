@@ -15,6 +15,11 @@ namespace hik {
 /// very same CameraBase -> RingBuffer path a real camera uses, on its own
 /// delivery thread at the configured frame rate.
 ///
+/// Image: spot height 54 000 (Mono16) or 180 (Mono8) on a constant offset of
+/// 10 % of that height, with shot noise (variance = mean) from
+/// sim::renderNoisySpot(). The noise is seeded with the frame number of the
+/// session, so the images are reproducible.
+///
 /// Simulated capabilities: exposure, gain, frame rate, binning {1, 2, 4} and
 /// ROI are settable, the trigger is not. Exposure and gain are bookkeeping
 /// only - they do not change the image, so the spot position stays exactly

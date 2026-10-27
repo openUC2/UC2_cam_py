@@ -1,7 +1,9 @@
 """Simulated camera for tests and development without hardware.
 
 It produces a Gaussian spot that walks row by row over a 5 x 4 grid of the
-sensor, through the same ring-buffer path as a real camera. The expected spot
+sensor, through the same ring-buffer path as a real camera. The spot sits on a
+constant offset of 10 % of its height and carries shot noise (variance = mean,
+Poisson statistics). The expected spot
 centre of every frame is known (``camera.spot_position(sequence)``), so tests
 can check the image content, not just its shape.
 """
