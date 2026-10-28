@@ -6,6 +6,21 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-29
+
+### Added
+
+- **OME-TIFF export of recordings: `uc2_cam_py.exporter`.**
+  - `list_raw_files(folder=None)` lists the `.uc2rb` recordings of a folder (default: the
+    recording folder) as absolute paths.
+  - `export_as_ome_tiff(path, *, output_path=None)` writes `<name>.ome.tif` and returns it as
+    an open `tifffile.TiffFile`. The session header is in the OME-XML (MapAnnotation) and in
+    TIFF tag 65401 of the first page; each frame header is in its OME `Plane` (with `DeltaT`
+    and a MapAnnotation) and in TIFF tag 65400 of its own page. The OME-XML follows the OME
+    2016-06 schema; the images are streamed, so recordings may exceed the memory.
+  - New dependency: `tifffile`.
+  - Example: `Examples/export_recordings.py` (`--demo` runs without a camera).
+
 ## [2.0.0] - 2026-10-28
 
 ### Changed

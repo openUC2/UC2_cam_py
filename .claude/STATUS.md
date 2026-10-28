@@ -1,9 +1,9 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-28 · Branch `main` · Basis-Commit `3437793` = Tag `v1.0.1` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** `ImgData.data` immer 3D `(H, W, C)`, Version 2.0.0 (oberster
-Eintrag). Davor: 1.0.1 (Build ohne bzw. mit unbrauchbarem MVS-SDK). Davor: Build ohne MVS-SDK,
-Versionierung (1.0.0, Tag `v1.0.0` auf `4b91fdd`), Flush-Fehler, Rauschen im simulierten Bild.
+**Stand:** 2026-10-29 · Branch `main` · Basis-Commit `166e1de` = Tag `v2.0.0` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** OME-TIFF-Export `uc2_cam_py.exporter`, Version 2.1.0 (oberster
+Eintrag). Davor: 2.0.0 (`ImgData.data` immer 3D), 1.0.1 (Build ohne bzw. mit unbrauchbarem
+MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im simulierten Bild.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +11,69 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### `ImgData.data` immer 3D `(H, W, C)` — Version 2.0.0 — 2026-10-28
+### OME-TIFF-Export `uc2_cam_py.exporter` — Version 2.1.0 — 2026-10-29
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-29 mit Zusatz
+  Beispielprogramm.
+  - Vom Nutzer entschieden:
+    - `export_as_ome_tiff` gibt ein **geöffnetes `tifffile.TiffFile`** zurück.
+    - Der Frame-Header steht **zweifach** (OME `Plane` + Annotation **und** TIFF-Tag je Seite).
+    - `tifffile` ist eine **feste Abhängigkeit**.
+    - Die Version geht gleich auf **2.1.0**.
+  - Annahme: „`uc2_cam_py.exportert`“ war ein Tippfehler → `uc2_cam_py.exporter`.
+- **`_uc2rb.py` (privat):**
+  - numpy-Strukturtypen `SESSION_HEADER` (8448 B) und `FRAME_HEADER` (64 B) mit festen Offsets
+    wie in C++.
+  - `read_session_header()` → `ImgMetaData`; `ValueError` bei falscher Magic, Version oder
+    Headergröße (z. B. alter 512-B-Header).
+  - `frame_records()`: erster Durchgang nur über die Köpfe; ein abgeschnittener letzter
+    Datensatz wird mit WARNING weggelassen.
+  - `read_frame()` → `(H, W, C)`.
+- **`exporter.py`:**
+  - `list_raw_files(folder=None)`: nicht rekursiv, absolut, sortiert. Bei `None` der
+    Standardordner (fehlt er, dann `[]`). Fehlt ein angegebener Ordner, `FileNotFoundError`;
+    eine Datei ergibt `NotADirectoryError`.
+  - `export_as_ome_tiff(path, *, output_path=None)`:
+    - schreibt `<name>.ome.tif` (über `.part` + `replace`) und gibt es geöffnet zurück
+    - ein `TiffWriter.write()` je Bild, weil tifffile die `extratags` einer zusammenhängenden
+      Serie nur auf deren erste Seite schreibt
+    - eigenes OME-XML auf Seite 0, `metadata=None`; BigTIFF über ~4 GB; tifffile erst in der
+      Funktion importiert (`import uc2_cam_py` lädt es nicht)
+  - **Tags:** 65400 `FRAME_HEADER_TAG` je Seite, 65401 `SESSION_HEADER_TAG` auf Seite 0.
+  - **OME-XML:**
+    - Session als `MapAnnotation` (`openuc2.org/uc2_cam_py/session`)
+    - je Bild `Plane` (`DeltaT` relativ zu `startMonoNs`) mit `MapAnnotation`
+      (`…/frame`: `sequence`, Zeiten, `slot`, `flags`)
+    - `AcquisitionDate`; `PhysicalSizeX/Y` = Pitch × Binning aus dem Kommentar
+- **Tests `tests/test_exporter.py` (15):**
+  - `list_raw_files` (Ordner, Standardordner, Fehler).
+  - Leser gegen C++ (`read_session_header` == `cam.get_image_info()`).
+  - Export echter Aufnahmen Mono16/Mono8 (Pixel, beide Header-Orte, Planes, `DeltaT`,
+    PhysicalSize) sowie `output_path`/Ersetzen.
+  - Künstliche Dateien: uint8/uint16/float64, RGB `(T, H, W, 3)`, Lücken in `sequence`,
+    abgeschnittener Datensatz, falsche Eingaben (nichts halb Geschriebenes bleibt liegen).
+  - Beispielprogramm `--demo` als Subprozess.
+- **Beispiel `Examples/export_recordings.py`:** listet, exportiert und liest Session- und
+  Frame-Header sowie ein Bild; `--demo` nimmt erst mit Simulated auf.
+- **Doku:** Interface-Doku §9.1 (neu, mit Inhaltsverzeichnis), README („Exporting recordings“,
+  Baum, Abhängigkeiten), CHANGELOG `[2.1.0]`, `VERSION` 2.1.0, `pyproject` (`tifffile>=2023.1.23`,
+  installiert 2026.10.15) + `uv.lock`.
+- **Verifikation:**
+  - Das OME-XML (Mono, RGB, echte Aufnahme) ist **gültig** gegen das offizielle XSD
+    `OME/2016-06/ome.xsd`: geprüft mit `xmlschema` über `uvx`, das XSD frisch von
+    openmicroscopy.org.
+  - Export 1920×1200, 104 Bilder, 457 MiB: 0,21 s (Plattencache warm), Spitzenspeicher +12 MiB.
+  - `uv run all_tests` → C++ 138/138, Python 207 passed / 22 skipped; ruff sauber (auch
+    `Examples/`), Pyright 0 Fehler.
+- **Offen (Nutzer):**
+  - Eine Export-Datei in Fiji öffnen (Bio-Formats, „Display OME-XML metadata“).
+  - Tag `v2.1.0` nach dem Commit.
+
+### `ImgData.data` immer 3D `(H, W, C)` — Version 2.0.0 — 2026-10-28
+
+**Implementiert:** ja · **Committet:** ja (`166e1de`, Tag `v2.0.0`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-28.
   - Vom Nutzer entschieden: Der Bruch der Schnittstelle führt gleich zu **2.0.0**.
@@ -40,7 +100,8 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
     `(200, 400, 1) uint16 strides (800, 2, 2)`.
   - `uv run all_tests` → C++ 138/138, Python 192 passed / 22 skipped.
   - Display-Tests 2 passed; ruff sauber, Pyright 0 Fehler.
-- **Offen:** Tag `v2.0.0` nach dem Commit des Nutzers (setze ich, Push durch den Nutzer).
+- **Tag:** `v2.0.0` (annotiert) auf `166e1de` gesetzt; das Pushen (`git push origin v2.0.0`)
+  macht der Nutzer.
 
 ### Version 1.0.0 → 1.0.1 — 2026-10-27
 
@@ -562,11 +623,13 @@ python/uc2_cam_py/       Python-Paket: camera.py (Camera, create_camera), data.p
                          ImgMetaData), hikrobot.py/simulated.py, defaults.py,
                          _preview.py (Fenster für debug_window), _logging.py (Log-Forwarder),
                          _process.py (startet den Kamera-Prozess),
+                         exporter.py (OME-TIFF-Export) + _uc2rb.py (Leser für .uc2rb),
                          _resources.py, _hik.pyi
 core/tests/              Catch2-v3-Tests
 tests/                   pytest-Tests
 Examples/                Programme auf Basis des Core: HikStandalone.cpp (CLI, braucht Kamera),
-                         RingBuffExample.cpp (ohne Kamera); nur Top-Level-Build, HIK_BUILD_EXAMPLES
+                         RingBuffExample.cpp (ohne Kamera); nur Top-Level-Build, HIK_BUILD_EXAMPLES.
+                         Dazu export_recordings.py (Python, Export-Beispiel, --demo ohne Kamera)
 Docs/                    Referenzdokumentation (RingBuff_REF.md, Tooling.md)
 VERSION                  die Versionsnummer (SemVer), einzige Quelle; CHANGELOG.md je Version
 CMakePresets.json        Build-Varianten debug | profile | asan | tsan → build/<preset>
@@ -634,7 +697,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 208 Tests, ~19 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 229 Tests, ~20 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```

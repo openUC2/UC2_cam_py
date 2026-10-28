@@ -46,7 +46,8 @@ UC2_cam_py/
 │   └── tests/                #   C++ unit tests (Catch2)
 ├── Examples/                 # programs built on the core (-DHIK_BUILD_EXAMPLES, default ON)
 │   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
-│   └── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
+│   ├── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
+│   └── export_recordings.py  #   Python: export recordings as OME-TIFF and read them back
 ├── bindings/
 │   └── hik_py.cpp            # pybind11 module (_hik), low level
 ├── python/uc2_cam_py/        # the Python package
@@ -56,6 +57,8 @@ UC2_cam_py/
 │   ├── simulated.py          #   simulated vendor class
 │   ├── _preview.py           #   live-view window behind create_camera(debug_window=True)
 │   ├── _process.py           #   starts the camera process (separate_process=True)
+│   ├── exporter.py           #   list recordings, export them as OME-TIFF
+│   ├── _uc2rb.py             #   reader for the .uc2rb recording files
 │   ├── defaults.py           #   default values (later from config.yaml)
 │   └── __main__.py           #   `python -m uc2_cam_py`: pick a camera, live view
 ├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
@@ -163,7 +166,8 @@ sequenceDiagram
   `External/hik/MVS/scripts/`.
 - A C++17 compiler, CMake ≥ 3.25, Ninja.
 - For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
-  (uv installs it automatically from `.python-version`).
+  (uv installs it automatically from `.python-version`). Runtime dependencies, installed with
+  the package: numpy, and tifffile for the OME-TIFF export.
 - **For the preview window:** the X11 development headers. If they are missing:
 
   ```bash
@@ -281,6 +285,29 @@ Camera index (0-0, Enter = quit):
 Quick connection test of a HikRobot camera (grab, snapshot; no window):
 `uc2_cam_py.run_connection_test(index=0, frames=100, snapshot="capture.png")`.
 The MVS runtime libraries are located automatically; no `LD_LIBRARY_PATH` needed.
+
+### Exporting recordings as OME-TIFF
+
+Recordings (`store_image_data=True`) are `.uc2rb` files. `uc2_cam_py.exporter` lists them and
+converts them to OME-TIFF, which Fiji/Bio-Formats, napari and tifffile open directly:
+
+```python
+from uc2_cam_py import exporter
+
+for path in exporter.list_raw_files():               # default: ~/UC2_recordings
+    with exporter.export_as_ome_tiff(path) as tif:   # writes <name>.ome.tif next to it, returns it open
+        print(tif.series[0].shape)                   # (T, H, W), or (T, H, W, 3) for RGB/BGR
+```
+
+The session header of the recording is in the OME-XML and in TIFF tag 65401 of the first page;
+the frame header of every image is in its OME `Plane` and in TIFF tag 65400 of its own page
+(details: [interface spec §9.1](Docs/UC2_cam_py_interface.md#91-export-of-recordings-uc2_cam_pyexporter)).
+A complete example, which also runs without a camera:
+
+```bash
+uv run python Examples/export_recordings.py --demo   # record with the simulated camera, export, read back
+uv run python Examples/export_recordings.py [FOLDER] # export every recording in FOLDER
+```
 
 ## Build & run — C++ standalone (Examples)
 

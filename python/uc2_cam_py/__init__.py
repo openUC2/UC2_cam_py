@@ -26,7 +26,7 @@ import warnings
 from . import _sdk_env  # noqa: F401
 
 # isort: split
-from . import _hik, _logging, defaults
+from . import _hik, _logging, defaults, exporter
 from ._hik import DeviceInfo, finalize, initialize
 from .camera import (
     BINNING_FACTORS,
@@ -61,6 +61,7 @@ __all__ = [
     "CONNECTION_TYPES",
     "BINNING_FACTORS",
     "defaults",
+    "exporter",
     "initialize",
     "finalize",
     "__version__",

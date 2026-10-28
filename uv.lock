@@ -140,10 +140,23 @@ wheels = [
 ]
 
 [[package]]
+name = "tifffile"
+version = "2026.10.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/87/a982ca5b892579397c2b155275cc0119b51feb1701eaefa18acb0245f0a4/tifffile-2026.10.15.tar.gz", hash = "sha256:a5ee666dbd6d62e059830a3450825a2521a981b3f45c07a80ab009484aef56f0", size = 454150, upload-time = "2026-10-16T00:32:10.511Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/bc/9e7664e2d30d4e82ada1b29dbb249d2dcac1ed1114cbbf11764f670d8be7/tifffile-2026.10.15-py3-none-any.whl", hash = "sha256:3dcf6c56731a45c1f85c81e90dad922b0a380a2d639e77f71207e010f8ef0f7b", size = 276988, upload-time = "2026-10-16T00:32:09.158Z" },
+]
+
+[[package]]
 name = "uc2-cam-py"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "tifffile" },
 ]
 
 [package.dev-dependencies]
@@ -156,7 +169,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=1.21" }]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.21" },
+    { name = "tifffile", specifier = ">=2023.1.23" },
+]
 
 [package.metadata.requires-dev]
 dev = [

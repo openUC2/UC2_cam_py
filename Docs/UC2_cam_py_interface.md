@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 2.0.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 2.1.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -29,6 +29,7 @@ with uc2_cam_py.create_camera(vendor="HikRobot", connection_type="USB3",
 7. [Behaviour in detail](#7-behaviour-in-detail)
 8. [Vendors](#8-vendors)
 9. [Helpers](#9-helpers)
+   - [9.1 Export of recordings: `uc2_cam_py.exporter`](#91-export-of-recordings-uc2_cam_pyexporter)
 10. [Changes against the draft](#10-changes-against-the-draft)
 11. [Known limitations](#11-known-limitations)
 
@@ -421,6 +422,60 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 | `uc2_cam_py.vendors()` | Available vendor names. A vendor this build cannot drive is left out: without the MVS SDK, `"HikRobot"`. |
 
 `uc2_cam_py._hik` is the compiled low-level module and is not part of this interface.
+
+### 9.1 Export of recordings: `uc2_cam_py.exporter`
+
+*Addition.* Recordings (`store_image_data=True`) are `.uc2rb` files, a format only this package
+reads. The module `uc2_cam_py.exporter` turns them into OME-TIFF for Fiji/Bio-Formats, napari,
+tifffile and other tools. It needs `tifffile`, a dependency of the package.
+
+```python
+from uc2_cam_py import exporter
+
+for path in exporter.list_raw_files():                 # the default recording folder
+    with exporter.export_as_ome_tiff(path) as tif:     # writes <name>.ome.tif, returns it open
+        images = tif.series[0].asarray()               # (T, H, W), or (T, H, W, 3) for RGB/BGR
+```
+
+| Function | Description |
+|---|---|
+| `exporter.list_raw_files(folder=None) -> list[str]` | The recordings (`*.uc2rb`) directly in `folder` (not in subfolders), as absolute paths sorted by name - which is the order they were made in, as the names carry the UTC start time. `None`: the default recording folder `defaults.IMAGE_FILE_PATH`; `[]` while it does not exist. A given folder that does not exist raises `FileNotFoundError`, a file `NotADirectoryError`, another type `TypeError`. |
+| `exporter.export_as_ome_tiff(path, *, output_path=None) -> tifffile.TiffFile` | Writes `<name>.ome.tif` next to the recording (or to `output_path`), replacing an existing file, and returns it as an **open** `tifffile.TiffFile` - close it, best with `with`. The images are copied one by one, so a recording may be larger than the memory; above ~4 GB the file is a BigTIFF. Raises `FileNotFoundError` (no such file), `ValueError` (not a `.uc2rb`, an unknown layout, no images), `TypeError`. |
+
+**What the OME-TIFF holds:**
+
+- **Images.** One page per frame, in the order of the recording; one image (`Image:0`) with
+  `SizeT` = number of frames, `SizeC` = channels (RGB/BGR as 3 interleaved samples), the pixel
+  type of the recording (`uint8`, `uint16`, `double`). `PhysicalSizeX/Y` (µm) = pixel pitch ×
+  binning, if the session comment has both.
+- **Session header** - the header of the whole file:
+  - in the OME-XML of page 0, as a `MapAnnotation` of the image (namespace
+    `openuc2.org/uc2_cam_py/session`) with every `ImgMetaData` field plus `source_file` and
+    `exporter`; `AcquisitionDate` is the session start;
+  - as JSON in the private TIFF tag **65401** (`exporter.SESSION_HEADER_TAG`) of
+    page 0.
+- **Frame header** - the header of every image:
+  - in the OME-XML as the image's `Plane` (`TheT` = position in the file, `DeltaT` = seconds
+    since the session start, middle of the frame's two timestamps) with a `MapAnnotation`
+    (namespace `openuc2.org/uc2_cam_py/frame`: `sequence`, `time_before_ns`, `time_after_ns`,
+    `time_ns`, `slot`, `flags`);
+  - as JSON in the private TIFF tag **65400** (`exporter.FRAME_HEADER_TAG`) of the image's own
+    page: every field of the frame header. With tifffile, read it with
+    `tif.pages.get(i, aspage=True).tags[exporter.FRAME_HEADER_TAG].value`.
+- The OME-XML follows the OME 2016-06 schema.
+
+**Limits:**
+
+- Frames lost while recording show as gaps in `sequence`; `TheT` counts on without gaps.
+- A frame that was torn while it was written (only with the overwrite policy) cannot be
+  recognised: the `.uc2rb` file does not mark it.
+- A cut-off last frame (an interrupted recording, or one still being written) is left out with
+  a WARNING.
+- Long recordings make a large OME-XML, about 0.3 KB per frame.
+- Only the current `.uc2rb` layout (8448-byte session header, format version 1) is read.
+
+`Examples/export_recordings.py` shows the whole round trip (`--demo` records with the simulated
+camera first).
 
 ## 10. Changes against the draft
 
