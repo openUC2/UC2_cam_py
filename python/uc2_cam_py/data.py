@@ -17,13 +17,14 @@ import numpy as np
 class ImgData:
     """One image from the camera's ring buffer.
 
-    ``data`` is a **zero-copy, read-only** numpy view onto the ring slot: shape
-    ``(H, W)`` (mono, raw Bayer) or ``(H, W, 3)`` (RGB/BGR), dtype ``uint8`` or
-    ``uint16``. The view keeps the buffer memory alive, also after the camera
-    was closed. In the default overwrite mode the camera may recycle the slot
-    while you are still reading it - call :meth:`is_valid` *after* processing
-    to know whether what you read was consistent. Use ``data.copy()`` to keep an
-    image independently of the buffer.
+    ``data`` is a **zero-copy, read-only** numpy view onto the ring slot, always
+    three-dimensional: shape ``(H, W, C)`` with C = 1 (mono, raw Bayer) or 3
+    (RGB/BGR), dtype ``uint8`` or ``uint16``. ``data[..., 0]`` is the 2D view of
+    a single channel, again without a copy. The view keeps the buffer memory
+    alive, also after the camera was closed. In the default overwrite mode the
+    camera may recycle the slot while you are still reading it - call
+    :meth:`is_valid` *after* processing to know whether what you read was
+    consistent. Use ``data.copy()`` to keep an image independently of the buffer.
 
     Timestamps are monotonic nanoseconds (``time.monotonic_ns()`` clock):
 

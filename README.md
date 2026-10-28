@@ -241,7 +241,7 @@ with uc2_cam_py.create_camera(
     cam.start()
     img: ImgData | None = cam.get_last_image()
     if img is not None:
-        frame = img.data                # read-only numpy view, no copy
+        frame = img.data                # read-only numpy view (H, W, C), no copy; C = 1 for mono
         result = frame.mean()
         if img.is_valid():              # not overwritten meanwhile -> result is consistent
             print(img.sequence, img.time_ns, result)

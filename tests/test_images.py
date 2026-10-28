@@ -44,7 +44,7 @@ def test_last_image_is_imgdata_with_consistent_times(camera) -> None:
     assert a.time_before_ns <= a.time_after_ns
     assert a.time_ns == (a.time_before_ns + a.time_after_ns) // 2
     assert a.slot == a.sequence % BUFFER
-    assert a.data.shape[:2] == (camera.image_size[1], camera.image_size[0])
+    assert a.data.shape == (camera.image_size[1], camera.image_size[0], 1)
     time.sleep(0.1)
     b = camera.get_last_image()
     assert b.sequence > a.sequence
@@ -60,7 +60,23 @@ def test_dtype_follows_the_pixel_format(open_camera) -> None:
     wait_for_frames(mono8, 1)
     img = mono8.get_last_image()
     assert img.data.dtype == np.uint8
-    assert img.data.shape == (200, 400)
+    assert img.data.shape == (200, 400, 1)
+
+
+@pytest.mark.parametrize("separate_process", [True, False], ids=["process", "in-process"])
+@pytest.mark.parametrize("pixel_format, itemsize", [("Mono8", 1), ("Mono16", 2)])
+def test_data_is_always_three_dimensional(open_camera, separate_process, pixel_format, itemsize) -> None:
+    """One channel comes as (H, W, 1) - the layout of a colour image - and stays zero-copy."""
+    cam = open_camera(start_on_init=True, pixel_format=pixel_format, separate_process=separate_process)
+    wait_for_frames(cam, 1)
+    data = cam.get_last_image().data
+    w, h = cam.image_size
+    assert data.shape == (h, w, 1)
+    assert data.strides == (w * itemsize, itemsize, itemsize)
+    plane = data[..., 0]                             # the 2D view of the channel ...
+    assert plane.shape == (h, w)
+    assert np.shares_memory(plane, data)             # ... is no copy
+    assert not plane.flags.writeable
 
 
 def test_view_is_zero_copy_and_read_only(sim_camera) -> None:
@@ -112,7 +128,7 @@ def test_image_content_matches_the_simulated_spot(sim_camera) -> None:
     wait_for_frames(sim_camera, 5)
     sim_camera.stop()                        # freeze the ring: nothing can be recycled
     img = sim_camera.get_last_image()
-    cx, cy = _centroid(img.data)
+    cx, cy = _centroid(img.data[..., 0])
     ex, ey = sim_camera.spot_position(img.sequence)
     assert cx == pytest.approx(ex, abs=0.5)
     assert cy == pytest.approx(ey, abs=0.5)
@@ -125,7 +141,7 @@ def test_simulated_image_has_an_offset_with_shot_noise(open_camera, pixel_format
     wait_for_frames(cam, 2)
     cam.stop()
     img = cam.get_last_image()
-    data = img.data.astype(np.float64)
+    data = img.data[..., 0].astype(np.float64)
     ex, ey = cam.spot_position(img.sequence)
     background = float(np.median(data))
     # Mean of the 3 x 3 pixels at the spot centre: the maximum would be the top of the noise.
@@ -145,8 +161,8 @@ def test_image_content_with_roi_and_binning(sim_camera) -> None:
     wait_for_frames(sim_camera, 3)
     sim_camera.stop()
     img = sim_camera.get_last_image()
-    assert img.data.shape == (100, 200)
-    cx, cy = _centroid(img.data)
+    assert img.data.shape == (100, 200, 1)
+    cx, cy = _centroid(img.data[..., 0])
     ex, ey = sim_camera.spot_position(img.sequence)
     # binned pixel i covers sensor pixels 2i..2i+1 -> sensor x = 2*cx + 0.5
     assert 2 * cx + 0.5 == pytest.approx(ex, abs=1.0)

@@ -182,6 +182,6 @@ def test_geometry_change_while_recording_restarts_the_session(open_camera, rec_l
     second = cam.recording_file
     assert second != first
     wait_for_frames(cam, 2)
-    assert cam.get_last_image().data.shape == (100, 200)
+    assert cam.get_last_image().data.shape == (100, 200, 1)
     cam.stop()
     assert Path(first).exists() and Path(second).exists()

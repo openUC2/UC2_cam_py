@@ -1,8 +1,8 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-27 · Branch `main` · Basis-Commit `e6ca7ad` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** Version 1.0.1 (oberster Eintrag). Davor: Ein unbrauchbares
-`MVS_ROOT` führt zum Build ohne HikRobot statt zum Abbruch, mit SDK-Prüfung beim Konfigurieren. Davor: Build ohne MVS-SDK,
+**Stand:** 2026-10-28 · Branch `main` · Basis-Commit `3437793` = Tag `v1.0.1` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** `ImgData.data` immer 3D `(H, W, C)`, Version 2.0.0 (oberster
+Eintrag). Davor: 1.0.1 (Build ohne bzw. mit unbrauchbarem MVS-SDK). Davor: Build ohne MVS-SDK,
 Versionierung (1.0.0, Tag `v1.0.0` auf `4b91fdd`), Flush-Fehler, Rauschen im simulierten Bild.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
@@ -11,9 +11,40 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Version 1.0.0 → 1.0.1 — 2026-10-27
+### `ImgData.data` immer 3D `(H, W, C)` — Version 2.0.0 — 2026-10-28
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-28.
+  - Vom Nutzer entschieden: Der Bruch der Schnittstelle führt gleich zu **2.0.0**.
+  - Wer `img.data[y, x]` als Zahl oder `imshow(img.data)` nutzte, muss umstellen auf
+    `img.data[..., 0]`.
+- **Binding `imageArray()`:** einzige Stelle, an der die Form entsteht. Immer
+  `shape = {H, W, C}`, `strides = {W·C·item, C·item, item}`; die Fallunterscheidung für einen
+  Kanal ist weg. Weiterhin kopierfrei und schreibgeschützt.
+- **`_preview.to_display()`:** nimmt `(H, W)` und `(H, W, C)`. Es dünnt jetzt **vor** dem
+  Kanalmittel aus (1920×1200 `(H, W, 1)`: 0,9 ms statt 2,9 ms mit der alten Reihenfolge).
+- **Doku:**
+  - `ImgData`-Docstring, Interface-Doku §6 und §8 (Tabelle der Pixelformate), README-Beispiel.
+  - CHANGELOG `[2.0.0] - 2026-10-28` „Changed“ (breaking) mit Umsteigehinweis.
+  - `VERSION` 2.0.0, Kopfzeile der Interface-Doku.
+- **Tests:**
+  - Formen auf `(…, 1)` angepasst: `test_images`, `test_settings`, `test_process`,
+    `test_display`. `_centroid` und der Rausch-Test arbeiten auf `data[..., 0]`.
+  - Neu: `test_data_is_always_three_dimensional` (Mono8/Mono16 × Prozess/in-process: Form,
+    Strides, `data[..., 0]` teilt den Speicher und ist schreibgeschützt).
+  - Neu: `test_to_display_shows_one_channel_like_a_2d_image`.
+  - RGB liefert keine Testkamera.
+- **Verifikation:**
+  - `__version__` und `uc2_cam_worker --version` melden 2.0.0; Beispiel
+    `(200, 400, 1) uint16 strides (800, 2, 2)`.
+  - `uv run all_tests` → C++ 138/138, Python 192 passed / 22 skipped.
+  - Display-Tests 2 passed; ruff sauber, Pyright 0 Fehler.
+- **Offen:** Tag `v2.0.0` nach dem Commit des Nutzers (setze ich, Push durch den Nutzer).
+
+### Version 1.0.0 → 1.0.1 — 2026-10-27
+
+**Implementiert:** ja · **Committet:** ja (`3437793`, Tag `v1.0.1`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27.
 - **Inhalt von 1.0.1:**
@@ -33,12 +64,12 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
   - `uv run all_tests`: CMake konfigurierte von selbst neu; C++ 138/138, Python 187 passed /
     22 skipped.
   - Das Wheel heißt `uc2_cam_py-1.0.1-cp312-…`.
-- **Offen:** Tag `v1.0.1` nach dem Commit des Nutzers auf `main` (setze ich, Push durch den
-  Nutzer).
+- **Tag:** `v1.0.1` (annotiert) auf `3437793` gesetzt; das Pushen (`git push origin v1.0.1`)
+  macht der Nutzer.
 
 ### Unbrauchbares `MVS_ROOT` → ohne HikRobot bauen; SDK-Prüfung beim Konfigurieren — 2026-10-27
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`3437793`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-27.
   - Anlass: Ein äußeres Paket setzt `MVS_ROOT` per `config-settings-package`, und der Build

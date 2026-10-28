@@ -6,6 +6,17 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-28
+
+### Changed
+
+- **Breaking: `ImgData.data` is always three-dimensional, `(H, W, C)`.** A single channel (mono,
+  raw Bayer) now comes as `(H, W, 1)` instead of `(H, W)`; RGB/BGR stays `(H, W, 3)`. Code no
+  longer has to tell mono and colour cameras apart. The view is still zero-copy and read-only.
+  To port code written for 1.x, take the channel: `img.data[..., 0]` is the former `(H, W)`
+  view, again without a copy - e.g. for `img.data[y, x]` as a number or for
+  `matplotlib.pyplot.imshow`, which rejects `(H, W, 1)`.
+
 ## [1.0.1] - 2026-10-27
 
 ### Fixed

@@ -53,10 +53,16 @@ def test_to_display_accepts_imgdata_rgb_and_flat_images() -> None:
     rgb = np.full((10, 20, 3), 7, np.uint8)
     assert to_display(rgb, 100, 100).shape == (10, 20)
     assert not to_display(rgb, 100, 100).any()           # flat image -> black, no division by 0
-    data = ImgData(np.arange(12, dtype=np.uint16).reshape(3, 4), 0, 0, 0, 0, 0)
+    data = ImgData(np.arange(12, dtype=np.uint16).reshape(3, 4, 1), 0, 0, 0, 0, 0)
     assert to_display(data, 100, 100).max() == 255
     with pytest.raises(ValueError):
         to_display(np.zeros(5), 10, 10)
+
+
+def test_to_display_shows_one_channel_like_a_2d_image() -> None:
+    """ImgData.data is (H, W, 1) for mono cameras: the window must show it as before."""
+    plane = (np.arange(1200 * 1920, dtype=np.uint32) % 65536).astype(np.uint16).reshape(1200, 1920)
+    assert np.array_equal(to_display(plane[..., np.newaxis], 960, 600), to_display(plane, 960, 600))
 
 
 def test_no_debug_window_by_default(open_camera) -> None:
@@ -105,7 +111,7 @@ def test_debug_window_with_roi_and_binning(open_camera) -> None:
     cam.roi = (192, 150, 1536, 900)
     cam.binning = 2
     assert _live_view(cam) >= min(10, int(SECONDS * 10 * 0.5))
-    assert cam.get_last_image().data.shape == (450, 768)
+    assert cam.get_last_image().data.shape == (450, 768, 1)
 
 
 @pytest.mark.display

@@ -115,24 +115,17 @@ py::dtype dtypeOf(uint8_t depth)
 
 /// Read-only numpy view onto the slot of @p self (an ImageHandle object), which
 /// becomes the array's base and so stays alive as long as the array does.
+/// Always (H, W, C) - also for one channel, (H, W, 1) - so callers need not
+/// tell mono and colour cameras apart.
 py::array imageArray(py::object self)
 {
     const ImageRef& r = self.cast<const ImageRef&>();
     const hik::UC2_SessionHeader& h = r.img.header;
     const py::ssize_t item = static_cast<py::ssize_t>(hik::itemSize(static_cast<hik::PixelDepth>(h.depth)));
-    std::vector<py::ssize_t> shape;
-    std::vector<py::ssize_t> strides;
-    if (h.channels == 1)
-    {
-        shape   = { static_cast<py::ssize_t>(h.height), static_cast<py::ssize_t>(h.width) };
-        strides = { static_cast<py::ssize_t>(h.width) * item, item };
-    }
-    else
-    {
-        const py::ssize_t c = static_cast<py::ssize_t>(h.channels);
-        shape   = { static_cast<py::ssize_t>(h.height), static_cast<py::ssize_t>(h.width), c };
-        strides = { static_cast<py::ssize_t>(h.width) * c * item, c * item, item };
-    }
+    const py::ssize_t c    = static_cast<py::ssize_t>(h.channels);
+    const std::vector<py::ssize_t> shape   = { static_cast<py::ssize_t>(h.height),
+                                               static_cast<py::ssize_t>(h.width), c };
+    const std::vector<py::ssize_t> strides = { static_cast<py::ssize_t>(h.width) * c * item, c * item, item };
     py::array arr(dtypeOf(h.depth), shape, strides, r.img.handle.data(), self);
     // The slot belongs to the ring (and to the .uc2rb stream): no writing into it.
     arr.attr("flags").attr("writeable") = false;

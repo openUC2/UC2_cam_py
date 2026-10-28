@@ -50,7 +50,7 @@ def test_each_camera_runs_in_a_process_of_its_own(open_camera) -> None:
     wait_for_frames(a, 3)
     wait_for_frames(b, 3)
     img = a.get_last_image()
-    assert img is not None and img.data.shape == (SIM_OPTIONS["sensor_height"], SIM_OPTIONS["sensor_width"])
+    assert img is not None and img.data.shape == (SIM_OPTIONS["sensor_height"], SIM_OPTIONS["sensor_width"], 1)
 
 
 def test_separate_process_false_keeps_the_camera_in_this_process(open_camera) -> None:

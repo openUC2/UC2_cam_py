@@ -43,12 +43,13 @@ def to_display(image: ImageLike, max_width: int, max_height: int) -> np.ndarray:
         numpy.ndarray: The display image (a new array; the input is not modified).
     """
     arr = image.data if isinstance(image, ImgData) else np.asarray(image)
-    if arr.ndim == 3:
-        arr = arr.mean(axis=2)
-    if arr.ndim != 2 or arr.size == 0:
+    if arr.ndim not in (2, 3) or arr.size == 0:
         raise ValueError(f"expected a (H, W) or (H, W, C) image, got shape {arr.shape}")
     step = max(1, math.ceil(arr.shape[0] / max_height), math.ceil(arr.shape[1] / max_width))
+    # Thin out first, then average the channels: only the small image is converted.
     small = arr[::step, ::step].astype(np.float64)
+    if small.ndim == 3:
+        small = small.mean(axis=2)
     lo, hi = float(small.min()), float(small.max())
     if hi <= lo:
         return np.zeros(small.shape, dtype=np.uint8)

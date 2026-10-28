@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 1.0.1). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 2.0.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -207,7 +207,7 @@ Both are public `@dataclass`es (`from uc2_cam_py import ImgData, ImgMetaData`).
 
 | Field | Type | Description |
 |---|---|---|
-| `data` | `numpy.ndarray` | Read-only zero-copy view onto the ring slot. `(H, W)` for mono/raw Bayer, `(H, W, 3)` for RGB/BGR; `uint8` or `uint16`. |
+| `data` | `numpy.ndarray` | Read-only zero-copy view onto the ring slot, always `(H, W, C)`: `(H, W, 1)` for mono/raw Bayer, `(H, W, 3)` for RGB/BGR; `uint8` or `uint16`. `data[..., 0]` is the 2D view of one channel (no copy). Until 1.0.1 a single channel came as `(H, W)`. |
 | `time_before_ns` | `int` | Monotonic ns when the image reached the host (camera callback). |
 | `time_after_ns` | `int` | Monotonic ns when the copy into the slot was complete. |
 | `time_ns` | `int` | Midpoint `(time_before_ns + time_after_ns) // 2`. |
@@ -381,8 +381,8 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 
   | Format | Stored as |
   |---|---|
-  | Mono8, Bayer\*8 | `uint8 (H, W)` |
-  | Mono10/12/16, Bayer\*10/12/16 (unpacked) | `uint16 (H, W)`, values not rescaled |
+  | Mono8, Bayer\*8 | `uint8 (H, W, 1)` |
+  | Mono10/12/16, Bayer\*10/12/16 (unpacked) | `uint16 (H, W, 1)`, values not rescaled |
   | RGB8/BGR8 | `uint8 (H, W, 3)` |
   | Packed formats (Mono12Packed, Bayer\*Packed), YUV | switched to the unpacked equivalent at initialisation (INFO); `RuntimeError` if the camera has none |
 
