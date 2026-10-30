@@ -1,6 +1,6 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-30 · Branch `main` · Basis-Commit `2fdc842` = Tag `v2.1.0` (Änderungen noch nicht committet)
+**Stand:** 2026-10-30 · Branch `ARM_Fence` · Commit `280ad7b` = Tag `v2.1.1` (noch nicht in `main` gemergt)
 **Letzte Arbeitsschritte:** Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1
 (oberster Eintrag). Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
 (Build ohne bzw. mit unbrauchbarem MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im
@@ -14,7 +14,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Seqlock-Fences für ARM + Checkliste für den ersten Pi-Lauf — Version 2.1.1 — 2026-10-30
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`280ad7b` auf Branch `ARM_Fence`, Tag `v2.1.1`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-30. Anlass war die
   Frage des Nutzers, ob das Paket unter macOS und Linux ARM läuft. Die Antwort ohne Plan:
@@ -60,7 +60,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
   Pfad). Der Baum ist gelöscht und neu gebaut.
 - **Offen (Nutzer):**
   - Die Checkliste auf dem Pi abarbeiten und die Ergebnistabelle zurückmelden (§11.2 Punkt 6).
-  - Commit. Danach setze ich den Tag `v2.1.1`.
+  - Tag `v2.1.1` pushen (`git push origin v2.1.1`); Branch `ARM_Fence` nach `main` mergen.
 
 ### OME-TIFF-Export `uc2_cam_py.exporter` — Version 2.1.0 — 2026-10-29
 
