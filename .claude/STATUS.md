@@ -1,9 +1,10 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-29 · Branch `main` · Basis-Commit `166e1de` = Tag `v2.0.0` (Änderungen noch nicht committet)
-**Letzte Arbeitsschritte:** OME-TIFF-Export `uc2_cam_py.exporter`, Version 2.1.0 (oberster
-Eintrag). Davor: 2.0.0 (`ImgData.data` immer 3D), 1.0.1 (Build ohne bzw. mit unbrauchbarem
-MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im simulierten Bild.
+**Stand:** 2026-10-30 · Branch `main` · Basis-Commit `2fdc842` = Tag `v2.1.0` (Änderungen noch nicht committet)
+**Letzte Arbeitsschritte:** Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1
+(oberster Eintrag). Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
+(Build ohne bzw. mit unbrauchbarem MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im
+simulierten Bild.
 
 Dieses Dokument ist die einzige Projektdokumentation für Claude-Sessions: §1–§4 sind die
 Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 der aktuelle
@@ -11,9 +12,59 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### OME-TIFF-Export `uc2_cam_py.exporter` — Version 2.1.0 — 2026-10-29
+### Seqlock-Fences für ARM + Checkliste für den ersten Pi-Lauf — Version 2.1.1 — 2026-10-30
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-30. Anlass war die
+  Frage des Nutzers, ob das Paket unter macOS und Linux ARM läuft. Die Antwort ohne Plan:
+  - macOS baut nicht: `prctl`, `SOCK_CLOEXEC`, `SOCK_SEQPACKET`, memfd.
+  - aarch64 ist im Build vorgesehen, hatte aber eine Lücke in der Speicherordnung.
+- **Befund:** Der Seqlock war nur für x86 (TSO) korrekt.
+  - `stillValid()` prüfte mit `load(acquire)`. Das hält frühere Pixel-Lesezugriffe nicht davor.
+  - `beginWrite()` setzte den ungeraden Wert mit `fetch_add(acq_rel)`. Das hält spätere
+    Schreibzugriffe nicht dahinter.
+  - Auf aarch64 konnte so ein halb überschriebenes Bild `is_valid()` bestehen.
+- **`core/src/UC2_RingBuff.cpp`:**
+  - Helfer `seqlockWriteFence()` (Release) und `seqlockReadFence()` (Acquire), eingesetzt in
+    `beginWrite()` nach dem ungeraden Wert, in `acquireSlot()` vor der zweiten Prüfung und in
+    `ReadHandle::stillValid()`.
+  - Unter TSan sind die Helfer leer: Makro `HIK_TSAN` aus `__SANITIZE_THREAD__` bzw.
+    `__has_feature(thread_sanitizer)`. GCC warnt sonst mit `-Wtsan`, und TSan modelliert die
+    Fences ohnehin nicht.
+- **Header `UC2_RingBuff.h`:** nur Kommentare, **gleiche Zeilenzahl**. `RingBuff_REF.md` hat
+  28 Zeilenverweise auf den Header.
+- **Doku:**
+  - Neu: `Docs/ARM_Checkliste.md` (§1–§11 mit Ergebnistabelle).
+  - `Tooling.md` §7 verweist darauf; die alte Kurz-Checkliste ist entfernt.
+  - `RingBuff_REF.md` §1 hat einen Absatz zu den Fences bekommen.
+  - Die sieben Zeilenverweise von `RingBuff_REF.md` auf `UC2_RingBuff.cpp` sind korrigiert. Vier
+    davon waren schon vorher veraltet.
+  - README: neuer Punkt „Platforms“ und der Projektbaum.
+  - `VERSION` und die Kopfzeile der Schnittstellen-Doku stehen auf 2.1.1; CHANGELOG `[2.1.1]`
+    mit „Fixed“ und „Added“.
+- **Verifiziert (x86, GCC 16.2.1):**
+  - `uv run all_tests`: C++ 138/138, Python 207 passed / 22 skipped. Das Paket meldet
+    `2.1.1`, `HAVE_MVS` True.
+  - `asan` 138/138.
+  - `tsan` 137/138: nur der bekannte, auch vorher wackelnde Stream-Test, siehe §11.2 Punkt 7.
+    Kein `-Wtsan`.
+  - `profile` 138/138; die Torn-Tests (`-R "never torn|readSlot and readLatest"`) liefen 200
+    Runden in 94 s ohne Fehler.
+  - Assembler, x86: kein `mfence`, gleich viele `lock`-Befehle wie am Stand `2fdc842`.
+  - Assembler, aarch64: Clang `--target=aarch64-linux-gnu` mit Host-Headern und Stubs für
+    `gnu/stubs-32.h` und `bits/floatn.h`.
+    - `beginWrite`: `dmb ish`
+    - `acquireSlot`, `stillValid`, `FileStreamSink::writerLoop` (eingebettet): `dmb ishld`
+- **Nebenbei:** `build/profile` stammte noch aus `UC2_HIKpy` (der Cache zeigte auf den alten
+  Pfad). Der Baum ist gelöscht und neu gebaut.
+- **Offen (Nutzer):**
+  - Die Checkliste auf dem Pi abarbeiten und die Ergebnistabelle zurückmelden (§11.2 Punkt 6).
+  - Commit. Danach setze ich den Tag `v2.1.1`.
+
+### OME-TIFF-Export `uc2_cam_py.exporter` — Version 2.1.0 — 2026-10-29
+
+**Implementiert:** ja · **Committet:** ja (`2fdc842`, Tag `v2.1.0`)
 
 - **Plan:** `~/.claude/plans/steady-coalescing-wand.md`, freigegeben 2026-10-29 mit Zusatz
   Beispielprogramm.
@@ -69,7 +120,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
     `Examples/`), Pyright 0 Fehler.
 - **Offen (Nutzer):**
   - Eine Export-Datei in Fiji öffnen (Bio-Formats, „Display OME-XML metadata“).
-  - Tag `v2.1.0` nach dem Commit.
+  - Tag `v2.1.0` pushen (`git push origin v2.1.0`).
 
 ### `ImgData.data` immer 3D `(H, W, C)` — Version 2.0.0 — 2026-10-28
 
@@ -993,8 +1044,17 @@ registrieren.
 4. ~~**Multi-Prozess**~~ — **erledigt 2026-10-27** (Eintrag oben): memfd statt `shm_open`, also
    keine Namen und nichts aufzuräumen nach einem Absturz; futex statt `PTHREAD_PROCESS_SHARED`.
 5. ~~**README**~~ — **erledigt 2026-10-18**.
-6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die `static_assert`s auf
-   `is_always_lock_free` würden dort sofort anschlagen, falls etwas nicht passt.
+6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die Seqlock-Fences dafür sind seit 2.1.1
+   drin (oberster Eintrag). Der Nutzer arbeitet [Docs/ARM_Checkliste.md](../Docs/ARM_Checkliste.md)
+   auf dem Pi ab und meldet die Ergebnistabelle zurück; erst dann ist dieser Punkt erledigt.
+7. **Wackelnder Test unter TSan:** „stopStreaming finishes although the producer keeps writing“
+   (`test_ringbuffer_stream.cpp:515`) scheitert im `tsan`-Build in etwa 25 % der Läufe,
+   im `debug`-Build in etwa 1 %.
+   - Ursache: Nach den 20 ms Wartezeit hat der Schreib-Thread noch kein Bild gespeichert
+     („closed … after 0 frames“), und `REQUIRE_FALSE(records.empty())` schlägt an.
+   - Das ist ein Timing-Problem des Tests. Am Stand `2fdc842` ohne Fences gemessen: 28/100.
+   - Gefunden 2026-10-30, noch nicht behoben. Abhilfe wäre, vor `stopStreaming()` zu warten,
+     bis `streamFramesSaved() > 0`, statt fest 20 ms.
 
 ### 11.3 Aus dem Code-Review vom 2026-09-03 weiterhin offen
 

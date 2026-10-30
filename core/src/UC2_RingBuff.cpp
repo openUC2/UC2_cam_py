@@ -14,6 +14,15 @@
 #include <sys/syscall.h>
 #endif
 
+// ThreadSanitizer build? (GCC defines the first, Clang answers the second.)
+#if defined(__SANITIZE_THREAD__)
+#define HIK_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define HIK_TSAN 1
+#endif
+#endif
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -165,6 +174,33 @@ void futexWakeAll(std::atomic<uint32_t>& word)
     ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE, INT32_MAX, nullptr, nullptr, 0);
 #else
     (void)word;   // waiters poll
+#endif
+}
+
+// Seqlock fences. The seqlock counter alone orders nothing it does not touch:
+// a release on the odd value does not hold back the stores AFTER it, and an
+// acquire on the re-check does not hold back the loads BEFORE it. x86 never
+// reorders those (no instruction is emitted there); aarch64 does, and without
+// these fences a reader could take a half-overwritten frame for a stable one.
+// ThreadSanitizer does not model standalone fences (GCC warns, -Wtsan), so they
+// are left out under it; the payload race they order is suppressed there anyway
+// (tools/sanitizers/tsan.supp).
+
+/// After making a slot's seqlock odd: keeps the slot's new bytes (record and
+/// payload) from becoming visible before the odd value does.
+void seqlockWriteFence()
+{
+#if !defined(HIK_TSAN)
+    std::atomic_thread_fence(std::memory_order_release);
+#endif
+}
+
+/// Before re-checking a slot's seqlock: keeps the bytes the reader looked at
+/// from being read after the check.
+void seqlockReadFence()
+{
+#if !defined(HIK_TSAN)
+    std::atomic_thread_fence(std::memory_order_acquire);
 #endif
 }
 
@@ -507,6 +543,7 @@ bool RingBuffer::ReadHandle::stillValid() const
         return false;
     }
     const UC2_SlotRecord* rec = m_owner->slotAt(m_slot);
+    seqlockReadFence();   // the caller's reads of the frame stay before the check
     return rec != nullptr && rec->seq.load(std::memory_order_acquire) == m_seqStamp;
 }
 
@@ -1175,6 +1212,7 @@ bool RingBuffer::beginWrite(WriteHandle& out, int64_t tsBeforeNs)
     // Odd seqlock value: any reader that samples the slot from here on knows a
     // write is in flight and backs off.
     rec->seq.fetch_add(1, std::memory_order_acq_rel);
+    seqlockWriteFence();   // the record and the caller's pixels come after the odd value
     rec->flags.store(kFlagWriting, std::memory_order_relaxed);
     rec->sequence.store(sequence, std::memory_order_relaxed);
     rec->nbytes.store(0, std::memory_order_relaxed);
@@ -1407,6 +1445,7 @@ bool RingBuffer::acquireSlot(uint32_t index, const uint64_t* wantSequence,
     rec->pins.fetch_add(1, std::memory_order_acq_rel);
 
     // Second half of the seqlock.
+    seqlockReadFence();
     if (rec->seq.load(std::memory_order_acquire) != stamp)
     {
         rec->pins.fetch_sub(1, std::memory_order_acq_rel);

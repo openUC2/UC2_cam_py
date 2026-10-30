@@ -6,6 +6,22 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-30
+
+### Fixed
+
+- **Ring buffer on CPUs that reorder memory accesses (aarch64, e.g. Raspberry Pi 5).** The
+  seqlock that tells a reader whether a frame was overwritten while it read it lacked two
+  fences. Without them an ARM CPU may let the reader's pixel reads slip past the final check,
+  or make a new frame's pixels visible before the slot is marked as being written. A
+  half-overwritten frame could then pass `ImgData.is_valid()` (and the disk writer's check).
+  x86 orders these accesses anyway, so nothing changes there: the fences emit no instruction.
+
+### Added
+
+- `Docs/ARM_Checkliste.md`: step-by-step checklist for the first build and test run on a
+  Raspberry Pi 5 / aarch64, with a results table. The package has not run on ARM hardware yet.
+
 ## [2.1.0] - 2026-10-29
 
 ### Added

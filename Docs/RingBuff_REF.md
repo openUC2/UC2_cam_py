@@ -50,10 +50,15 @@ in den Slot. Der Disk-Streamer schreibt mit `writev()` direkt aus dem Slot, ohne
 abgestürzter Consumer kann den Puffer deshalb nicht beschädigen. Jeder Slot hat einen
 **Seqlock-Zähler**: gerade = stabil, ungerade = Schreiben läuft. Ein Reader liest den Zähler vor
 und nach der Nutzung und verwirft den Frame, wenn der Producer den Slot inzwischen recycelt hat
-(`ReadHandle::stillValid()`). Wer auf das nächste Bild wartet (`waitForFrame()`), schläft per
-**futex** auf einem Zähler in der Region; das funktioniert über Prozessgrenzen und braucht keine
-Sperre, die ein abgestürzter Prozess halten könnte. Mutex und Condition Variable liegen außerhalb
-der Region und bremsen nur den Producer im Wait-Modus.
+(`ReadHandle::stillValid()`). Der Zähler allein ordnet aber nur, was ihn selbst berührt. Deshalb
+setzt `beginWrite()` nach dem ungeraden Wert eine Release-Fence. Ebenso stehen in `stillValid()`
+und im Lesepfad vor der zweiten Prüfung Acquire-Fences. Sonst könnte auf aarch64 ein halb
+überschriebenes Bild als stabil gelten. x86 ordnet diese Zugriffe ohnehin und erzeugt für die
+Fences keine Instruktion. Unter TSan fehlen sie, weil TSan alleinstehende Fences nicht modelliert;
+siehe den Kommentar bei `seqlockWriteFence()`. Wer auf das nächste Bild wartet
+(`waitForFrame()`), schläft per **futex** auf einem Zähler in der Region; das funktioniert über
+Prozessgrenzen und braucht keine Sperre, die ein abgestürzter Prozess halten könnte. Mutex und
+Condition Variable liegen außerhalb der Region und bremsen nur den Producer im Wait-Modus.
 
 **Lesen aus fremder Region.** Ein angehängter Leser vertraut keinem Wert der Region, der eine
 Adresse bestimmt: `attach()` prüft einmal eine private Kopie des Headers, danach werden alle
@@ -67,7 +72,7 @@ lassen.
 
 `configure()` berechnet das Layout, fordert die Region über `UC2_MemoryOps::acquire` an (64-Byte-
 Alignment), nullt sie und legt die Objekte mit Placement-new an
-([UC2_RingBuff.cpp:472](../core/src/UC2_RingBuff.cpp#L472)).
+([UC2_RingBuff.cpp:741](../core/src/UC2_RingBuff.cpp#L741)).
 
 ```
 Offset 0                  UC2_SessionHeader             8448 B
@@ -92,7 +97,7 @@ payloadOffset             Payload[slotCount]             slotCount × slotStride
 | Gesamtgröße der Region | ≤ 16 GiB |
 
 **Layout-Invarianten** werden per `static_assert` erzwungen
-([UC2_RingBuff.cpp:31-39](../core/src/UC2_RingBuff.cpp#L31-L39)):
+([UC2_RingBuff.cpp:40-59](../core/src/UC2_RingBuff.cpp#L40-L59)):
 
 - Die Strukturgrößen sind fest: `UC2_SessionHeader` = 8448 B, `UC2_FrameHeader` = 64 B,
   `UC2_SlotRecord` = 64 B, `UC2_Consumer` = 64 B.
@@ -307,12 +312,12 @@ Python-Hook. Alle vier Callbacks sind optional; `nullptr` wird übersprungen.
 
 | Feld | Aufgerufen … | Implementierung |
 |---|---|---|
-| `abiVersion` | geprüft in `addSink()` | [cpp:638](../core/src/UC2_RingBuff.cpp#L638) |
+| `abiVersion` | geprüft in `addSink()` | [cpp:972](../core/src/UC2_RingBuff.cpp#L972) |
 | `ctx` | an jeden Callback | — |
-| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:681](../core/src/UC2_RingBuff.cpp#L681) |
-| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:746](../core/src/UC2_RingBuff.cpp#L746) |
-| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:711](../core/src/UC2_RingBuff.cpp#L711) |
-| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:655](../core/src/UC2_RingBuff.cpp#L655) |
+| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:1028](../core/src/UC2_RingBuff.cpp#L1028) |
+| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:1109](../core/src/UC2_RingBuff.cpp#L1109) |
+| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:1071](../core/src/UC2_RingBuff.cpp#L1071) |
+| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:998](../core/src/UC2_RingBuff.cpp#L998) |
 
 **Verhalten im Detail**
 

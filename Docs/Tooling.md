@@ -281,13 +281,9 @@ sudo apt install build-essential cmake ninja-build libx11-dev valgrind linux-per
 **Profile vom Pi am PC ansehen:** Auf dem Pi `perf archive build/reports/perf-…/perf.data`, beide
 Dateien kopieren, am PC `hotspot --sysroot <entpacktes Archiv> perf.data`.
 
-**Checkliste für den ersten Lauf auf dem Pi** (ungeprüft, bisher nur auf x86 getestet):
+**Erster Lauf auf dem Pi:** Schritt für Schritt in [ARM_Checkliste.md](ARM_Checkliste.md), von
+der Systemprüfung über die Speicherordnung bis zur Kamera, mit Ergebnistabelle. Ein erstes Profil
+danach:
 ```bash
-getconf PAGESIZE                                  # 4096 → valgrind nutzbar
-cmake --preset debug                              # findet das SDK? (lib/aarch64)
-cmake --build --preset debug && ctest --preset debug
-cmake --preset asan && cmake --build --preset asan && ctest --preset asan
-cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
-cmake --preset profile && cmake --build --preset profile
 tools/analyze.sh perf --no-open build/profile/Examples/RingBuffExample /tmp/rec
 ```
