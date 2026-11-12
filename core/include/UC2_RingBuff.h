@@ -48,10 +48,10 @@
 /// consumer can never corrupt the buffer. Each slot carries a seqlock counter
 /// (even = stable, odd = a write is in progress); a reader samples it before and
 /// after use and rejects the frame if the producer recycled the slot underneath
-/// it (RingBuffer::ReadHandle::stillValid()). Readers waiting for the next frame
-/// sleep on a futex word inside the region, which works across processes and
-/// involves no lock a crashed process could leave held. The mutex and condition
-/// variable outside the region only pace the producer in FullPolicy::Wait.
+/// it (RingBuffer::ReadHandle::stillValid(); fenced on both sides, as aarch64 reorders
+/// where x86 does not). Readers waiting for the next frame sleep on a futex word in the
+/// region, across processes and without a lock a crashed process could leave held. The
+/// mutex and condition variable outside it only pace the producer in FullPolicy::Wait.
 ///
 /// ## Reading another process's region
 ///
@@ -194,7 +194,7 @@ struct UC2_SlotRecord
 /// consumers do not ping-pong the producer's cursor between cores.
 struct UC2_Consumer
 {
-    std::atomic<uint32_t> active;       ///< non-zero while the slot is claimed
+    std::atomic<uint32_t> active;       ///< 0 free, 1 active, 2 being registered (not counted yet)
     uint32_t              reserved0;
     std::atomic<uint64_t> ackSequence;  ///< first sequence NOT yet acknowledged
     uint8_t               pad[kCacheLine - 16];
@@ -418,7 +418,7 @@ public:
         /// @return true while the handle pins a slot.
         bool held() const { return m_owner != nullptr; }
 
-        /// Re-check the slot's seqlock.
+        /// Re-check the slot's seqlock (fenced: the caller's reads stay before it).
         /// @return true if the producer has not touched the slot since the
         ///         handle was acquired, i.e. the bytes read are consistent.
         bool stillValid() const;

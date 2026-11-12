@@ -268,26 +268,23 @@ sudo apt install build-essential cmake ninja-build libx11-dev valgrind linux-per
 
 | Punkt | Pi 5 |
 |---|---|
-| ASan/UBSan/LSan, TSan | grundsätzlich ja; siehe Seitengröße |
+| ASan/UBSan/LSan | ja, auch mit dem Standard-Kernel (auf dem Pi 5 geprüft 2026-11) |
+| TSan | **nur mit 4-KB-Seiten-Kernel.** Der Standard-Kernel nutzt 47 Bit virtuelle Adressen, die TSan-Laufzeit von GCC 14 kennt auf aarch64 nur 39, 42 und 48 („unsupported VMA range“). Schon `cmake --build` scheitert, weil `catch_discover_tests` das Testprogramm startet ([ARM_Checkliste.md §8](ARM_Checkliste.md#8-sanitizer)) |
 | valgrind | **nur mit 4-KB-Seiten-Kernel.** Der Standard-Kernel `kernel_2712.img` nutzt 16-KB-Seiten; `analyze.sh` bricht dann mit Hinweis ab |
 | perf + hotspot | ja (Cortex-A76-PMU) |
 | perf c2c | **nein**: braucht Arm SPE, das der A76 nicht hat. Ersatz: `perf stat -e l1d_cache_refill,l2d_cache_refill,l1d_cache -- <binary>` oder `valgrind --tool=cachegrind` |
 | Cache-Line | 64 B, wie im Code angenommen |
 
-**4-KB-Kernel aktivieren** (für valgrind, und falls TSan/ASan mit 16-KB-Seiten Probleme machen): in
+**4-KB-Kernel aktivieren** (für TSan und valgrind): in
 `/boot/firmware/config.txt` die Zeile `kernel=kernel8.img` ergänzen und neu starten.
 `getconf PAGESIZE` muss dann `4096` zeigen.
 
 **Profile vom Pi am PC ansehen:** Auf dem Pi `perf archive build/reports/perf-…/perf.data`, beide
 Dateien kopieren, am PC `hotspot --sysroot <entpacktes Archiv> perf.data`.
 
-**Checkliste für den ersten Lauf auf dem Pi** (ungeprüft, bisher nur auf x86 getestet):
+**Erster Lauf auf dem Pi:** Schritt für Schritt in [ARM_Checkliste.md](ARM_Checkliste.md), von
+der Systemprüfung über die Speicherordnung bis zur Kamera, mit Ergebnistabelle. Ein erstes Profil
+danach:
 ```bash
-getconf PAGESIZE                                  # 4096 → valgrind nutzbar
-cmake --preset debug                              # findet das SDK? (lib/aarch64)
-cmake --build --preset debug && ctest --preset debug
-cmake --preset asan && cmake --build --preset asan && ctest --preset asan
-cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
-cmake --preset profile && cmake --build --preset profile
 tools/analyze.sh perf --no-open build/profile/Examples/RingBuffExample /tmp/rec
 ```

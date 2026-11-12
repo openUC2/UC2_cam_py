@@ -1,264 +1,265 @@
-<!-- Stand 2026-10-27: Plan umgesetzt (alle vier Etappen), noch nicht committet.
-     Ergebnis und Abweichungen: .claude/STATUS.md, Eintrag 2026-10-27. -->
+<!-- Stand 2026-11-13: Freigegeben 2026-11-12 und umgesetzt, nicht committet. Ergebnis und die
+     Abweichung beim neuen Test (findet den Fehler ohne Fix nur selten, bleibt trotzdem):
+     STATUS, oberster Eintrag. Branch ARM_Fence (HEAD 30135e7).
+     Der vorige Inhalt dieser Datei (Plan „Kamera im eigenen Prozess“, umgesetzt) steht in git
+     unter Commit 7679220. -->
 
-# Plan: Jede Kamera in einem eigenen Prozess (`uc2_cam_worker`)
+# Plan: Die Kamera bleibt stehen, wenn sich ein Consumer anmeldet (Wait-Modus) — Version 2.1.2
 
-## Kontext
+## 1. Fehlerbeschreibung
 
-Mehrere `uc2_cam_py`-Kameras sollen sich stabil auf die CPUs verteilen, ohne dass die
-Verwaltungssoftware etwas dafür tun muss. Die Erfassung (SDK-Callback → Kopie in den Ring) und
-das Speichern (`FileStreamSink`) laufen künftig in einem **eigenen Prozess je Kamera**. Der
-Hauptprozess (Python, Verwaltungssoftware) steuert über einen Socket und liest die Bilder
-**kopierfrei aus Shared Memory**. Gewinn: Ein Absturz des Closed-Source-SDK trifft nur seine
-Kamera. Alle Threads einer Kamera, auch die SDK-internen, gehören zu einem Prozess, den der
-Kernel als Ganzes verteilt und der sich später gezielt binden lässt. Logs sind je Kamera
-zuordenbar. Harte Anforderung: Beim Übergang, besonders beim Lesen der Bilder, darf es **keine
-Zugriffsverletzungen** geben (kein SIGSEGV/SIGBUS im Hauptprozess, gleich was der
-Kamera-Prozess tut).
+### Symptom
 
-Der Ring Buffer ist dafür vorbereitet (STATUS §7.1: zeigerfrei, POD, `UC2_MemoryOps`).
+- Test #91 „stopStreaming finishes although the producer keeps writing“
+  ([test_ringbuffer_stream.cpp:515-561](../core/tests/test_ringbuffer_stream.cpp#L515-L561))
+  scheitert sporadisch:
+  - im `tsan`-Build 22–28 von 100 Läufen, am PC und auf dem Pi 5
+  - im `debug`-Build etwa 1 von 100
+- Die Meldung lautet immer `test_ringbuffer_stream.cpp:558: REQUIRE_FALSE(records.empty())`.
+- Im Log steht dabei:
 
-## Entscheidungen
+  ```
+  FileStreamSink: closed …uc2rb after 0 frames (0 dropped)
+  RingBuffer: recording stopped after 4653 frames
+  ```
 
-- **Vom Nutzer abgenommen:**
-  - `create_camera(..., separate_process=True)` ist der Standard, `False` = heutiger Weg im
-    selben Prozess (für gdb und als zweiter Testpfad). Gilt für HikRobot und Simulated gleich.
-  - Die CPU-Affinität kommt **später**, als Punkt in `Todos.md`.
-- **Mein Vorschlag:**
-  - Der Kamera-Prozess ist ein **eigenes C++-Programm** (`uc2_cam_worker`), kein Python. Damit
-    braucht nicht jede Kamera einen Interpreter, es gibt keinen GIL, und kein Prozess, der schon
-    Threads hat, wird geforkt.
-  - Shared Memory über `memfd_create` + Seals, übergeben per `SCM_RIGHTS`. Aufwecken per
-    `futex`. **Kein prozessübergreifender Mutex**, also kann auch kein toter Prozess eine Sperre
-    halten. Das ersetzt den Plan `PTHREAD_PROCESS_SHARED` aus §7.3.
-  - Die Enumeration (`list_cameras`/`list_devices`) bleibt in v1 im Hauptprozess.
+- Ablauf des Tests:
+  - Ring mit 8 Slots, `FullPolicy::Wait`, `waitTimeoutMs = 5000`.
+  - Ein Producer-Thread schreibt so schnell er kann.
+  - Dann `startStreaming()`, 20 ms warten, `stopStreaming()`.
+  - Erwartet wird, dass in diesen 20 ms mindestens ein Bild gespeichert wurde.
 
+### Frühere, falsche Diagnose (berichtigen!)
+
+- Bisher hieß es, der Schreib-Thread sei nach 20 ms noch nicht dazu gekommen, ein Bild zu
+  speichern, also ein Timing-Problem des Tests. So steht es in STATUS §11.2 Punkt 7 und in
+  `Docs/ARM_Checkliste.md` §8.
+- Das ist falsch:
+  - `FileStreamSink::onSessionEnd()` setzt `m_stopAt = framesWritten()`.
+  - `writerLoop()` speichert vor dem Ende alles bis `m_stopAt`
+    ([UC2_RingBuff.cpp:1890-1925](../core/src/UC2_RingBuff.cpp#L1890-L1925),
+    [:1927-2009](../core/src/UC2_RingBuff.cpp#L1927-L2009)).
+  - „0 frames“ heißt deshalb: **Der Producer hat zwischen Streaming-Start und Stopp kein einziges
+    Bild geschrieben.**
+- Der damals vorgeschlagene Test-Umbau, nämlich auf `streamFramesSaved() > 0` zu warten, hätte
+  den Fehler **verdeckt**: Nach 5 s Wait-Timeout schreibt der Producer weiter, und der Test wäre
+  grün, nur langsam. Test #91 bleibt deshalb **unverändert**. Er hat den Fehler gefunden.
+
+### Messung (2026-11-12, x86, GCC 16, TSan; Kopie des Codes mit Log-Zeilen im Scratchpad)
+
+- In allen Läufen mit „0 frames“ gilt `ack (aus registerConsumer) = m_cursor = m_stopAt`, z. B.
+  29 / 29 / 29, 28 / 28 / 28, 35 / 35 / 35.
+- In grünen Läufen schreibt der Producer in denselben 20 ms rund 2400 Bilder.
+- Gegenprobe: In der Kopie bekam `registerConsumer()` nach dem Setzen von `ackSequence` ein
+  Wecken (`{ lock_guard lk(m_mtx); } m_slotFreed.notify_all();`). Danach **0 Fehlschläge in 100
+  TSan-Läufen**.
+- Vorsicht beim Nachmessen: Ein Log von `m_cursor` in `onSessionEnd()` ist selbst ein Data Race,
+  denn der Writer ändert `m_cursor` ohne Lock. TSan lässt dann auch gute Läufe scheitern.
+
+### Ursache 1 (beobachtet): veralteter Startwert und kein Wecken in `registerConsumer()`
+
+[UC2_RingBuff.cpp:1332-1362](../core/src/UC2_RingBuff.cpp#L1332-L1362):
+
+```cpp
+if (c.active.compare_exchange_strong(expected, 1, ...))        // (1) zählt ab jetzt als aktiv
+{
+    c.ackSequence.store(m_control->committedCount.load(...)); // (2) erst jetzt der Startwert
+    return i;                                                  // (3) kein notify
+}
 ```
-Hauptprozess (Python)                                 uc2_cam_worker (je Kamera, C++)
-Camera ─→ _hik.RemoteCamera ══ socketpair(SEQPACKET) ══ CamWorker ─→ CameraBase(HikCamera|SimCamera)
-              │  Empfangs-Thread: Antworten, Logs, Ring-fd           ├─→ RingBuffer (memfd) ─→ FileStreamSink
-              └─→ RingBuffer::attach(fd)  ── dieselben Seiten (MAP_SHARED) ──┘
-                  readLatest/readSlot/waitForFrame lokal, ohne IPC
+
+1. Zwischen (1) und (2) sieht der Producer einen **aktiven** Consumer mit **veraltetem**
+   `ackSequence`. Bei einem frischen Ring ist das 0, sonst der Wert eines früheren Consumers.
+   `minAckSequence()` ([:1120-1132](../core/src/UC2_RingBuff.cpp#L1120-L1132)) zählt jedes
+   `active != 0`.
+2. Die Wait-Prüfung des Producers in `applyFullPolicy()`
+   ([:1134-1171](../core/src/UC2_RingBuff.cpp#L1134-L1171)) verlangt
+   `minAckSequence() > outgoing`. Mit dem veralteten Wert ist das falsch, und der Producer
+   schläft in `m_slotFreed.wait_for(…, waitTimeoutMs)`.
+3. `registerConsumer()` weckt danach nicht. `acknowledge()` (:1377-1398) und
+   `unregisterConsumer()` (:1364-1375) tun es beide.
+4. Der FileStreamSink-Writer wartet auf ein neues Bild. Weil keines kommt, bestätigt er nichts und
+   weckt den Producer auch nicht. Beide warten, bis `stopStreaming()` den Consumer abmeldet
+   (`unregisterConsumer()` weckt) oder `waitTimeoutMs` abläuft.
+- Der Producer schläft also bis zu `waitTimeoutMs`. Der Standard ist 1000 ms
+  ([UC2_RingBuff.h:356](../core/include/UC2_RingBuff.h#L356)), im Test 5000 ms. Danach überschreibt
+  er mit WARN „still holds unacknowledged frame“, und `waitTimeouts()` steigt.
+
+### Ursache 2 (nicht beobachtet, aber möglich): Cursor des Writers hinter seiner Bestätigung
+
+`FileStreamSink::onSessionStart()` ([:1864-1876](../core/src/UC2_RingBuff.cpp#L1864-L1876))
+meldet sich zuerst an (`ack = committedCount = T1`). Erst danach setzt es
+`m_cursor = framesWritten()` (T2 ≥ T1).
+- Der Producer darf höchstens 8 Bilder (`slotCount`) über `ack` hinaus schreiben.
+- Ist zwischen T1 und T2 der Ring voll geworden (T2 = T1 + 8), wartet der Producer auf die
+  Bestätigung von T1. Der Writer wartet auf Bild T2 und liest T1 nie.
+- Beide warten dann bis zum Timeout.
+- In der Messung war T2 − T1 immer 0 oder 1. Möglich wird es, wenn der Thread genau dort
+  verdrängt wird.
+
+### Wer betroffen ist
+
+- Nur Ringe mit `FullPolicy::Wait`.
+- Die Kameras in uc2_cam_py nutzen `Overwrite`
+  ([CameraBase.cpp:307](../core/src/CameraBase.cpp#L307)). Die Python-Schnittstelle ist also
+  **nicht betroffen**.
+- Betroffen sind C++-Nutzer der Klasse mit `Wait`, die einen Consumer anmelden oder
+  `startStreaming()` aufrufen, während der Producer läuft.
+- Kein ARM-Problem; es tritt auf x86 genauso auf.
+
+## 2. Änderungen
+
+### 2.1 `registerConsumer()`: den Startwert setzen, bevor der Eintrag zählt
+
+In [core/src/UC2_RingBuff.cpp](../core/src/UC2_RingBuff.cpp):
+- Drei Zustände für `UC2_Consumer::active`:
+  - `0` = frei
+  - `kConsumerClaimed = 2` = wird gerade angemeldet und zählt noch nicht
+  - `kConsumerActive = 1` = aktiv
+- Die beiden Konstanten kommen in den anonymen Namespace oben in der Datei.
+
+```cpp
+if (c.active.compare_exchange_strong(expected, kConsumerClaimed, acq_rel, acquire))
+{
+    // Start value BEFORE the entry counts: a producer must never gate on an
+    // active consumer whose cursor is still the stale one of a previous user.
+    c.ackSequence.store(m_control->committedCount.load(std::memory_order_acquire),
+                        std::memory_order_relaxed);
+    c.active.store(kConsumerActive, std::memory_order_release);
+    return i;
+}
 ```
 
----
+- `minAckSequence()`: `if (c.active.load(acquire) == kConsumerActive)` statt `!= 0`. Dank
+  release/acquire auf `active` sieht der Producer dann immer den frischen `ackSequence`.
+- `unregisterConsumer()` bleibt (`store(0)` + notify).
+- **Ein `notify` ist nicht nötig.** Ein neuer Consumer kann die Wait-Bedingung nur verschärfen,
+  nie lockern. Ein schlafender Producer schläft dann wegen eines anderen Consumers, und dessen
+  Bestätigung weckt ihn. In der Scratch-Kopie wurde mit notify gemessen (Variante „Wecken“). Sie
+  ist ebenfalls korrekt, lässt das Fenster aber offen. Die gewählte Variante schließt es.
+- `active` gibt es nur an diesen drei Stellen (:1126, :1348, :1370); vorher mit `grep -n
+  'active\.' core/src/UC2_RingBuff.cpp` prüfen.
+- `layoutVersion` bleibt gleich. Die Tabelle liegt zwar in der geteilten Region, aber ein
+  angehängter Leser liest sie nie, weil `registerConsumer()` auf angehängten Ringen abgelehnt wird.
+  Haupt- und Kamera-Prozess prüfen außerdem ohnehin die Versionsgleichheit.
 
-## Etappe 1 — Ring Buffer in Shared Memory (nur C++, noch kein zweiter Prozess)
+### 2.2 `FileStreamSink::onSessionStart()`: Bestätigung an den Cursor angleichen
 
-Dateien: `core/include/UC2_RingBuff.h`, `core/src/UC2_RingBuff.cpp`, `core/include/CameraBase.h`,
-`core/src/CameraBase.cpp`, neu `core/tests/test_ringbuffer_shm.cpp`, `core/tests/CMakeLists.txt`.
+Nach dem Block, der `m_cursor = m_owner.framesWritten()` setzt
+([:1871-1875](../core/src/UC2_RingBuff.cpp#L1871-L1875)), und **außerhalb** von `m_mtx`:
 
-1. **`RingBuffer::Config::sharedMemory`** (Standard `false`). `configure()` belegt die Region
-   dann so:
-   - `memfd_create(MFD_CLOEXEC | MFD_ALLOW_SEALING)`
-   - `ftruncate` + **`fallocate`**: Die Seiten werden sofort reserviert. Speichermangel zeigt
-     sich dann als Fehler in `configure()` und nicht später als SIGBUS beim Seitenfehler.
-   - Seals `F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL`: Niemand kann das Segment verkleinern,
-     also gibt es kein SIGBUS beim Leser.
-   - `mmap(MAP_SHARED)`.
+```cpp
+// Gate the producer from where we start reading, not from where we registered:
+// otherwise a full ring in between leaves it waiting for a frame we never read.
+if (m_consumer != kAnonymousConsumer && cursor > 0)
+{
+    m_owner.acknowledge(m_consumer, cursor - 1);
+}
+```
 
-   Umgesetzt als zweite interne `UC2_MemoryOps`-Implementierung neben `heapMemoryOps()`, mit
-   neuem Getter `int sharedFd() const` (-1 bei Heap). `CameraBase::BufferConfig::sharedMemory`
-   reicht den Schalter in `startLocked()` durch.
-2. **`static std::shared_ptr<RingBuffer> RingBuffer::attach(int fd)`**: Leser-Rolle auf einer
-   fremden Region.
-   - `fstat` + `mmap`.
-   - Die Prüfung muss erfolgreich sein, sonst `nullptr` + ERR, nie ein Absturz:
-     - Magic, `layoutVersion == 2`, `headerBytes`
-     - `slotCount` in [2, kMaxSlots]
-     - `frameBytes == w·h·c·item` (mit `mulChecked`)
-     - `slotStride` ≥ frameBytes und ausgerichtet
-     - die aus dem Header berechnete Regionsgröße == `fstat`-Größe
-     - Seals vorhanden (`F_GET_SEALS`)
-   - In dieser Rolle sind `beginWrite`, `startRecording`, `startStreaming` und
-     `registerConsumer` mit ERR abgewiesen. Lesen funktioniert.
-   - Der Destruktor gibt die Abbildung frei: Die Lebensdauer des `shared_ptr` ist die
-     Lebensdauer der Abbildung.
-3. **Der Leser vertraut keinem Wert aus der geteilten Region, der Adressen bestimmt:**
-   - `payloadAt()` rechnet ab sofort mit `m_payloadOffset + slot·m_slotStride` aus der eigenen,
-     geprüften Geometrie (heute `rec.payloadOffset`, [UC2_RingBuff.cpp:617](core/src/UC2_RingBuff.cpp#L617)).
-   - `acquireSlot()` begrenzt `nbytes` auf `frameBytes`.
-4. **`waitForFrame()` per futex** auf einem neuen 32-Bit-Zähler `frameSignal` plus
-   `frameWaiters` in `UC2_Control` (anstelle von `reserved0`/`pad0`; die Größe bleibt 64 B, die
-   `static_assert`s bleiben). Producer: Zähler erhöhen, `FUTEX_WAKE` nur bei Wartenden.
-   Ersetzt `m_frameReady` für beide Rollen, also ein einziger Mechanismus.
-   `kLayoutVersion` 1 → 2.
-5. Tests `[shm]`:
-   - Lesen über `attach` liefert dieselben Bytes.
-   - Manipulierte Header werden abgewiesen (Magic, Version, Größe, fehlende Seals).
-   - `ftruncate` auf den fd scheitert mit EPERM.
-   - Das angehängte Bild überlebt die Zerstörung des Producer-Rings.
+- `cursor` ist eine lokale Kopie aus dem Block.
+- `acknowledge()` bewegt nur vorwärts und weckt den Producer.
+- Außerhalb des Sink-Locks, weil `acknowledge()` den `m_mtx` des Rings nimmt. Keine neue
+  Lock-Reihenfolge.
+- Die Anmeldung muss dafür vor dem Cursor bleiben, sonst würde der Producer Bilder
+  überschreiben, die der Writer noch speichern will.
 
-   Tests `[shm][mt]`:
-   - `fork()` vor jedem Thread: Das Kind schreibt Muster-Frames, der Elternprozess prüft sie
-     mit `stillValid()`.
-   - SIGKILL ans Kind mitten im Lauf: Der Elternprozess liest weiter, kein SIGBUS.
-   - `waitForFrame` wacht prozessübergreifend auf.
+### 2.3 Kommentare und Header
 
-## Etappe 2 — Kamera-Prozess und Protokoll (C++)
+- [UC2_RingBuff.h:197](../core/include/UC2_RingBuff.h#L197): Kommentar zu `active` →
+  `///< 0 free, 1 active, 2 being registered (not counted yet)`. Dabei die **Zeilenzahl nicht
+  ändern**: `Docs/RingBuff_REF.md` hat 28 Zeilenverweise auf den Header.
+- Der Doxygen-Kommentar von `registerConsumer()` (:570) darf nur geändert werden, wenn die
+  Zeilenzahl gleich bleibt.
 
-Neu:
-- `core/include/CamIpc.h` + `core/src/CamIpc.cpp`: Nachrichten, Senden/Empfangen,
-  `SCM_RIGHTS`.
-- `core/include/RemoteCamera.h` + `core/src/RemoteCamera.cpp`
-- `core/src/CamWorker.cpp`: `int runWorker(int fd, const WorkerArgs&)`
-- `core/worker/uc2_cam_worker.cpp`: nur `main()`.
+## 3. Tests
 
-CMake:
-- `core/CMakeLists.txt`: Target `uc2_cam_worker`, `-Wall -Wextra`, BUILD_RPATH = MVS-Lib-Ordner.
-  Damit gibt es den Worker in **beiden** Konfigurationswegen.
-- Root-`CMakeLists.txt`: `install(TARGETS uc2_cam_worker DESTINATION uc2_cam_py)` mit
-  `INSTALL_RPATH $ORIGIN/_mvs/lib/<arch>`. DT_RPATH kommt über `hikcam_core` INTERFACE.
+- **Test #91 bleibt unverändert.** Er ist der statistische Nachweis.
+- **Neu in [core/tests/test_ringbuffer_mt.cpp](../core/tests/test_ringbuffer_mt.cpp):**
+  „registering a consumer never stalls a Wait-mode producer“ (`[ring][mt]`).
 
-**Protokoll**
-- `socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC)`. Das ist wichtig: Sonst erbt jeder
-  weitere Kamera-Prozess die Socket-Enden der anderen und erkennt dann nie, dass der
-  Hauptprozess weg ist.
-- Gestartet wird per **`posix_spawn`**, nicht `fork`: Der Python-Prozess hat Threads.
-  `adddup2` legt das Kind-Ende auf fd 3, es wird nichts weiter vererbt. Senden mit
-  `MSG_NOSIGNAL`.
-- Nachricht: Kopf {Magic, Protokollversion, Art (Request/Response/Event), Op, Id} plus typisierte
-  Felder (u32/i64/f64/str). Der Leser prüft alle Grenzen; eine fehlerhafte Nachricht wird
-  geloggt und abgewiesen, nie ein Absturz. Beim Start tauschen beide Seiten ein Hello mit der
-  Protokollversion aus.
-- Requests bilden die `CameraBase`-API 1:1 ab, dazu die Sim-Extras `spot_position`,
-  `exposure_auto`, `gain_auto`.
-- Events vom Worker:
-  - `Log(level, text)`
-  - `Ring(generation, fd)` mit fd per `SCM_RIGHTS`
-  - `Fatal`
-- **Reihenfolge:** Logs und Ring-Event eines Befehls gehen über denselben Socket **vor** dessen
-  Antwort. Nach `start()` oder `set_roi()` hat der Hauptprozess also den neuen Ring, und
-  `_logging.flush()` behält seine Bedeutung.
-- Öffnen: Die Argumente (`--vendor --serial --connection-type --index` + Sim-Optionen)
-  beantwortet der Worker mit `Opened(Identität)` oder `Error(Art, Text)`. Die Art wird wieder
-  zu `invalid_argument`/`out_of_range`/`runtime_error`, also wirft Python wie heute
-  ValueError/IndexError/RuntimeError.
+  ```cpp
+  cfg.slotCount = 8; cfg.policy = Wait; cfg.waitTimeoutMs = 5000;   // 4×4×1, configure
+  std::thread producer([&]{ while (!done) rb.writeFrame(src.data(), src.size()); });
+  int stalls = 0;
+  for (int i = 0; i < 300; ++i)
+  {
+      const uint64_t before = rb.framesWritten();
+      const uint32_t id = rb.registerConsumer();
+      // Without any acknowledge the producer may still fill the ring: up to slotCount
+      // frames past the cursor the registration set, and that cursor is >= before.
+      const auto deadline = steady_clock::now() + 500ms;
+      while (rb.framesWritten() < before + 8 && steady_clock::now() < deadline) yield();
+      if (rb.framesWritten() < before + 8) { ++stalls; }
+      rb.unregisterConsumer(id);    // wakes a stalled producer for the next round
+  }
+  done = true; producer.join();
+  CHECK(stalls == 0);               // CHECK only after join(): a REQUIRE with the thread
+  CHECK(rb.waitTimeouts() == 0);    // still running would std::terminate the test binary
+  ```
 
-**`RemoteCamera` (Hauptprozess)**
-- Dieselben Methodensignaturen wie `CameraBase`, aber **nicht** davon abgeleitet: `start`/`read`
-  von `CameraBase` sind nicht virtuell und besitzen Gerät und Ring.
-- Ein Empfangs-Thread:
-  - stellt Antworten dem wartenden Aufruf zu (Id → Promise),
-  - gibt Logs mit Quellen-Id an `hik::logMessage` weiter,
-  - beantwortet ein Ring-Event mit `RingBuffer::attach(fd)` und tauscht `m_ring` unter
-    Mutex. Alte Ringe leben in bestehenden `Image`s weiter.
-- `readLatest`, `readSlot`, `waitForFrame`, `sessionHeader` und `frames_written` laufen
-  **lokal** auf dem angehängten Ring, ohne IPC je Bild.
-- Aufrufe haben einen Timeout: 5 s, für start/stop/Geometrie/close 30 s. Bei Timeout oder EOF
-  ist die Kamera **„verloren“**: einmal ERR mit Exit-Code oder Signal, danach liefern alle
-  Aufrufe false/None, und `isRunning` ist false. **Bilder, die schon gelesen wurden, bleiben
-  lesbar.**
-- `close()`: Close-Request, `waitpid` mit 2 s, sonst SIGKILL + `waitpid`. Der Destruktor ruft
-  `close()` auf, es bleiben also keine Zombies zurück.
+  - Warum ein Stillstand erkannt wird: Ohne Fehler darf der Producer bis `ack + 8 ≥ before + 8`
+    schreiben, die Bedingung ist nach Mikrosekunden erfüllt. Mit dem Fehler bleibt er bei etwa
+    `ack` stehen; das wird nach 500 ms als Stillstand gezählt.
+  - Leere Slots (`kFlagWritten` fehlt) prüft der Producer nicht. Die ersten Runden können also
+    nichts Falsches melden.
+  - Wie zuverlässig das ist: Je Anmeldung trat der Fehler unter TSan in etwa 25 % der Fälle auf,
+    im Debug-Build in etwa 1 %. Bei 300 Runden wird er im Debug-Build zu etwa 95 % gefunden,
+    unter TSan praktisch sicher.
+  - Laufzeit: ohne Fehler wenige ms, mit Fehler 500 ms je Treffer.
+  - `REQUIRE` nur vor dem Start des Threads verwenden.
+- **Nachweis, dass der neue Test den Fehler findet:** Eine Kopie des Stands **ohne** Fix in den
+  Scratchpad legen (`git archive HEAD | tar -x -C <scratch>`), den neuen Test dort hinzufügen,
+  TSan-Build mit `-DHIK_MVS=OFF` bauen. Erwartet: `stalls > 0`. Danach mit Fix: `stalls == 0`.
 
-**Worker**
-- Ein Befehls-Thread führt die Requests auf `CameraBase` aus (`BufferConfig.sharedMemory = true`).
-  Hat sich nach einem Befehl `ring()` geändert, schickt er ein Ring-Event.
-- Log-Senke → Socket. Vom Befehls-Thread blockierend; von SDK-Callback und Writer
-  `MSG_DONTWAIT`. Verworfene Nachrichten werden gezählt und gemeldet.
-- **Lebensdauer:** Socket-EOF bedeutet, der Hauptprozess ist weg. Dann `cam->close()` (die
-  `.uc2rb`-Datei wird sauber abgeschlossen) und Ende. Auf SIGTERM folgt derselbe Weg.
-- **Kein `PR_SET_PDEATHSIG`:** Das Signal feuert schon, wenn der *Thread* endet, der den
-  Prozess gestartet hat.
-- **SIGINT wird ignoriert:** Ctrl+C trifft die ganze Prozessgruppe, schließen soll aber der
-  Hauptprozess.
-- `prctl(PR_SET_NAME, "uc2cam-<serial>")`, damit die Prozesse in top/htop erkennbar sind.
+## 4. Doku, Version, Status
 
-Tests `[worker]` (`core/tests/test_worker.cpp`, Pfad zum Worker per `$<TARGET_FILE:uc2_cam_worker>`):
-- **Simulated-Zyklus:** öffnen, Bereiche und Setter, start, `waitForFrame`, Bildinhalt
-  (Spot-Position), `setRoi` → neue Ring-Generation, das alte Bild bleibt lesbar, stop, close,
-  der Prozess ist eingesammelt.
-- **Fehler:** dieselben Ausnahmetypen; ein fehlendes Worker-Programm gibt `runtime_error`.
-- **Robustheit:**
-  - SIGKILL während der Aufnahme: Aufrufe scheitern sauber, das gehaltene Bild bleibt lesbar.
-  - Schließt der Hauptprozess seinen Socket, endet der Worker, und die `.uc2rb`-Datei ist
-    vollständig (Größe = 8448 + n·(64 + Frame)).
-  - Fehlerhafte Nachrichten in beide Richtungen werden abgewiesen, kein Absturz.
+- `Docs/RingBuff_REF.md`:
+  - §4 `UC2_Consumer`: die Zeile zu `active` (bisher „≠ 0, solange der Eintrag belegt ist“)
+    beschreibt jetzt die drei Zustände.
+  - §7.8 `registerConsumer()`: „Der Startwert wird gesetzt, bevor der Eintrag zählt.“
+  - Die **7 Zeilenverweise** auf `UC2_RingBuff.cpp` (`#L741`, `#L40-L59`, `#L972`, `#L1028`,
+    `#L1109`, `#L1071`, `#L998`) verschieben sich durch die neuen Zeilen. Nach der Änderung über
+    den Inhalt neu suchen und anpassen; die Prüfschleife steht in STATUS, Eintrag 2026-10-30.
+- `Docs/ARM_Checkliste.md` §8: Der Punkt „Bekannt, kein ARM-Problem: stopStreaming finishes …“
+  wird ersetzt. Neuer Inhalt: Ab 2.1.2 behoben, war ein echter Fehler (Wait-Modus) und kein
+  Timing-Problem. Tritt #91 mit 2.1.2 noch auf, bitte melden.
+- `.claude/STATUS.md`:
+  - Neuer oberster Eintrag (Implementiert / Committet).
+  - §11.2 Punkt 7 als erledigt markieren, mit der richtigen Ursache.
+- `VERSION` → **2.1.2** (PATCH: Fehlerfix ohne Schnittstellenänderung). Kopfzeile von
+  `Docs/UC2_cam_py_interface.md` → 2.1.2.
+- `CHANGELOG.md` `## [2.1.2] - <Datum>`, „Fixed“: Im Wait-Modus konnte der Producer bis zu
+  `waitTimeoutMs` stehen bleiben, wenn sich ein Consumer anmeldete oder das Streaming startete,
+  während er lief. Die Kameras von uc2_cam_py (Overwrite) waren nicht betroffen.
 
-## Etappe 3 — Python-Anbindung
+## 5. Verifikation
 
-Dateien: `bindings/hik_py.cpp`, `python/uc2_cam_py/{camera,hikrobot,simulated,_logging,defaults}.py`,
-`_hik.pyi`, `tests/conftest.py`, neu `tests/test_process.py`, `tests/test_api_surface.py`, `tests/test_hik.py`.
+- `uv run all_tests`: C++ und Python grün. Die Version meldet 2.1.2.
+- TSan, mit den Suppressions des Presets:
+  - Test #91 200-mal: **0 Fehlschläge** (vorher 22–28 von 100):
 
-1. **Bindings:** Die Kamera-Tabelle wird zur Vorlage `bindCameraApi<T>()` für `CameraBase` und
-   `RemoteCamera`, ohne Duplikat. `rangeOrNone`/`valueOrNone`/`readImage` werden
-   wiederverwendet; `ImageHandle` bleibt unverändert (hält `CameraBase::Image`, damit den
-   angehängten Ring und damit die Abbildung).
-   `_hik.RemoteCamera(worker_path, vendor, connection_type, serial, index, options)` ohne GIL,
-   dazu `pid`.
-2. **Logs je Kamera:**
-   - Jeder Eintrag der `LogQueue` bekommt eine `source` (0 = Core im selben Prozess, n =
-     `RemoteCamera`).
-   - `_pop_log` liefert `(level, message, source)`.
-   - `_logging` ordnet `source` dem Logger der Kamera zu (registrieren beim Erzeugen,
-     abmelden bei `close`). Eine unbekannte Quelle geht wie heute an den aktiven Logger.
+    ```bash
+    f=0; for i in $(seq 200); do ctest --preset tsan -R "stopStreaming finishes" >/dev/null 2>&1 || f=$((f+1)); done; echo $f
+    ```
 
-   Das erledigt den offenen Punkt aus §13 für den Prozess-Weg.
-3. **Neue Parameter:**
-   - `create_camera(..., separate_process: bool = True)` mit bool-Prüfung wie die anderen
-     Schalter, dazu `defaults.SEPARATE_PROCESS = True`.
-   - Die Hersteller-Klassen prüfen die Optionen wie bisher und erzeugen dann entweder
-     `_hik.HikCamera`/`SimCamera` oder `_hik.RemoteCamera(_worker_path(), cls.VENDOR, ...)`.
-   - `_worker_path()` sucht neben `_hik` wie `_sdk_env.bundled_sdk()`; fehlt das Programm,
-     gibt es RuntimeError mit Hinweis.
-   - Die SDK-Umgebung aus `_sdk_env` liegt schon in `os.environ` und wird an den Worker vererbt.
-4. Neue Property `Camera.process_id -> int | None` (None im selben Prozess).
-5. Ist der Worker verloren, laufen die bestehenden Fehlerwege (Setter → RuntimeError
-   „refused“). `get_last_image` liefert das letzte Bild aus der alten Abbildung.
+  - Dasselbe für den neuen Test (`-R "registering a consumer"`).
+- `debug`: Test #91 200-mal, 0 Fehlschläge (vorher etwa 1 von 100).
+- `asan`: `ctest --preset asan` grün.
+- `profile`: die Torn-Tests (`-R "never torn|readSlot and readLatest"`) 50 Runden, damit klar
+  ist, dass nichts anderes betroffen ist.
+- Ruff und Pyright bleiben unberührt (kein Python-Code).
 
-Tests:
-- Die Fixture `camera` wird parametrisiert über **Simulated-Prozess**, **Simulated im selben
-  Prozess** und HikRobot-Prozess (hardware). So läuft die ganze Schnittstellen-Suite über
-  beide Wege.
-- `test_process.py`:
-  - Zwei Kameras laufen unter zwei verschiedenen PIDs, beide ≠ `os.getpid()`.
-  - Nach `close()` ist der Prozess weg.
-  - `kill -9` an den Worker: kein Absturz, `np.sum(img.data)` funktioniert, ERROR im richtigen
-    Logger.
-  - Die Logs von Kamera A und B landen in Logger A und B.
-  - Interpreter-Ende ohne `close` (Subprozess mit `os._exit`): Der Worker ist nach 2 s weg,
-    die `.uc2rb`-Datei ist vollständig.
-  - SIGINT an die Prozessgruppe beendet den Worker nicht vor `close`.
-- `test_hik.py`: Die SDK-aus-dem-Paket-Prüfung zusätzlich auf `/proc/<worker-pid>/maps`.
-- `test_api_surface.py`: Signatur mit `separate_process`.
+## 6. Rahmen
 
-## Etappe 4 — Doku und Todos
-
-- **`.claude/STATUS.md`:** neuer Eintrag oben (Überschrift, Datum, implementiert/committet).
-  Außerdem:
-  - §1 Schichtung
-  - §3 Fallstricke: CLOEXEC/Vererbung, PDEATHSIG, SIGINT, Layout v2
-  - §7.3 futex
-  - §11.2.4 erledigt
-- `Docs/RingBuff_REF.md` (Layout v2, `attach`, Shared Memory), `Docs/UC2_cam_py_interface.md`
-  (`separate_process`, `process_id`), README.
-- **`Todos.md`:**
-  - CPU-Affinität je Kamera-Prozess (`cpu_affinity=None|'auto'|[Kerne]`), erst nach Messung
-    auf dem Pi 5.
-  - SDK nur noch im Kamera-Prozess laden (Enumeration auslagern).
-
-## Bewusst nicht enthalten
-
-- CPU-Affinität (→ Todos).
-- SDK-Freiheit des Hauptprozesses: Die Enumeration bleibt dort.
-- Registrierte Consumer im Hauptprozess (Wait-Policy über Prozessgrenzen): `CameraBase` nutzt
-  `Overwrite`, die Pins des Hauptprozesses sind nur ein Hinweis.
-- Payload nur lesbar (`PROT_READ`) abbilden.
-- macOS/Windows: `separate_process=True` meldet dort einen klaren Fehler.
-- `run_connection_test` und `HikStandAlone` bleiben unverändert.
-
-## Verifikation
-
-- `uv run c_tests`, inklusive `[shm]` und `[worker]`; Nur-Core-Weg `build/core`.
-  `ctest --preset tsan` und `--preset asan` für `[shm]|[worker]`.
-- `uv pip install -e . --no-build-isolation` → `uv run py_tests` (beide Wege),
-  `uvx ruff check python/ tests/ tools/`, `uvx pyright`.
-- **Von Hand:**
-  - `uv run main` mit Debugfenster.
-  - `ps -o pid,psr,comm -C uc2cam-SIM-0001` zeigt den Kamera-Prozess.
-  - Zwei Sim-Kameras in einer Python-Sitzung: `top -H` zeigt die Last verteilt.
-  - `kill -9` an den Worker bei offenem Fenster: Python läuft weiter.
-- Das gebaute Wheel enthält `uc2_cam_py/uc2_cam_worker` mit Ausführungsrecht (`unzip -Z`).
-- **Nutzer (Hardware):** `uv run py_tests -m hardware`. Zu prüfen: SDK-Enumeration im
-  Hauptprozess bei geöffneter Kamera im Worker, GigE und USB3.
+- Laut `.claude/CLAUDE.md` wird erst nach ausdrücklicher Freigabe dieses Plans umgesetzt.
+- `UC2_cam_py` nicht verlassen; temporäre Dateien gehören in den Scratchpad.
+- Für mich gesperrt (`settings.json`): `git commit`, `push`, `pull`, `checkout`, `switch`,
+  `tag -f`, `tag -d`. Erlaubt ist `git tag -a`.
+- Ablauf am Ende:
+  1. Der Nutzer committet.
+  2. Ich setze den Tag `v2.1.2` mit `git tag -a v2.1.2 -m "uc2_cam_py 2.1.2" <commit>`.
+  3. Der Nutzer pusht.
+  - Liegt der Commit nicht auf `main`, auf die Merge-Art achten: Bei Squash oder Rebase zeigt
+    der Tag auf einen Commit außerhalb von `main`.
+- Auf dem Pi wiederholt der Nutzer danach Checkliste §8 (TSan mit `kernel8.img`).

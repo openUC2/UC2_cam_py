@@ -21,6 +21,9 @@ buffer, recording to disk and zero-copy image access.
   protocol, logging.
 - **Tools:** a terminal capture tool (`HikStandAlone`), a ring-buffer example,
   profiling and sanitizer setups ([Docs/Tooling.md](Docs/Tooling.md)).
+- **Platforms:** Linux on x86_64 (built and tested) and aarch64 (prepared, not yet run on
+  hardware: [Docs/ARM_Checkliste.md](Docs/ARM_Checkliste.md) is the checklist for the first run
+  on a Raspberry Pi 5).
 
 ## Project layout
 
@@ -62,7 +65,7 @@ UC2_cam_py/
 │   ├── defaults.py           #   default values (later from config.yaml)
 │   └── __main__.py           #   `python -m uc2_cam_py`: pick a camera, live view
 ├── tests/                    # pytest suite (Simulated always, HikRobot with -m hardware)
-├── Docs/                     # interface spec, ring-buffer reference, tooling
+├── Docs/                     # interface spec, ring-buffer reference, tooling, ARM checklist
 ├── CMakePresets.json         # build variants debug | profile | asan | tsan
 ├── pyproject.toml            # Python packaging (scikit-build-core + pybind11, uv)
 ├── VERSION                   # the version number, the only place it is written down
