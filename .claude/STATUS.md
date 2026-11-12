@@ -1,13 +1,13 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-11-13 · Branch `ARM_Fence` · HEAD `30135e7`, Tag `v2.1.1` auf `280ad7b` (noch
-nicht in `main` gemergt). Version 2.1.2 ist umgesetzt, aber nicht committet; ebenso die
-Pi-Ergebnisse in STATUS, `Docs/ARM_Checkliste.md` und `Docs/Tooling.md`.
-**Nächster Schritt:** Der Nutzer committet. Danach setze ich den Tag `v2.1.2`
+**Stand:** 2026-11-13 · Branch `ARM_Fence` · HEAD `ce2cf48` (Version 2.1.2, noch ohne Tag),
+Tag `v2.1.1` auf `280ad7b`; nichts davon ist in `main` gemergt. Nicht committet ist der
+Abgleich von `Docs/RingBuff_REF.md` (oberster Eintrag).
+**Nächster Schritt:** Der Nutzer committet den Abgleich. Dann setze ich den Tag `v2.1.2`
 (`git tag -a v2.1.2 -m "uc2_cam_py 2.1.2" <commit>`), und der Nutzer pusht. Auf dem Pi
 wiederholt der Nutzer Checkliste §8 (TSan mit `kernel8.img`).
-**Letzte Arbeitsschritte:** Version 2.1.2: Im Wait-Modus blieb der Producer stehen, wenn sich ein
-Consumer anmeldete (oberster Eintrag). Davor der Pi-5-Lauf der ARM-Checkliste (Einträge
+**Letzte Arbeitsschritte:** `RingBuff_REF.md` an Header und Code angeglichen. Davor Version 2.1.2:
+Im Wait-Modus blieb der Producer stehen, wenn sich ein Consumer anmeldete. Davor der Pi-5-Lauf der ARM-Checkliste (Einträge
 2026-11-12) und die Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1. Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
 (Build ohne bzw. mit unbrauchbarem MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im
 simulierten Bild.
@@ -18,9 +18,45 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Wait-Modus: Producer bleibt nicht mehr stehen, wenn sich ein Consumer anmeldet — Version 2.1.2 — 2026-11-13
+### `Docs/RingBuff_REF.md` an Header und Code angeglichen — 2026-11-13
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/functional-painting-pumpkin.md`, freigegeben 2026-11-13. Anlass war
+  der Nebenbefund aus 2.1.2 (Eintrag darunter). Nur Doku, kein Code.
+- **Zeilenverweise:** Alle 28 Verweise auf `UC2_RingBuff.h` waren veraltet, um 9–88 Zeilen; der
+  Header ist seit dem Multi-Prozess-Schritt gewachsen. Sie sind neu gesetzt:
+  - Ein Einzelverweis zeigt auf die Deklarationszeile.
+  - Ein Bereich bei §7.5–§7.10 reicht vom Kommentar `// --- …` des Abschnitts bis zur letzten
+    Deklaration. §7.5 beginnt beim Konstruktor.
+  - Die Verweise in §11 zeigen auf die zitierte Kommentarzeile.
+  - Mit geändert: der Anker `#…--l62` → `#…--l71` in §6, der an der Überschrift von §3 hängt.
+- **Inhalt korrigiert:**
+  - §3: `kLayoutVersion` 1 → 2.
+  - §7.5: `configure()` legt den `FileStreamSink` **immer** an. Bisher hieß es dort „nur bei
+    gesetztem `storagePath`“, im Widerspruch zu §8.
+  - §7.2: `storagePath` leer = „nur im Speicher, bis `startStreaming()` ein Verzeichnis setzt“.
+  - Kopftabelle: Die Tests `_mt` und `_stream` sind ergänzt.
+  - §8 Schritt 1: die Bestätigung bis zum Cursor (2.1.2).
+  - §7.5: Hinweis, dass `attach()`/`isAttached()`/`sharedFd()` in §12 beschrieben sind.
+- **Geprüft und stimmig:** Enums, alle POD-Felder, die `Config`-Defaults, `WriteHandle`/
+  `ReadHandle`, die API von `FileStreamSink`, die Zitate in §11 und die 7 cpp-Verweise.
+- **Verifiziert:**
+  - Eine Schleife gibt die Zielzeile jedes Verweises aus: alle 28 Header- und 7 cpp-Verweise
+    treffen.
+  - Die 19 internen Links lösen nach der GitHub-Slug-Regel alle auf.
+- **Wie man das künftig nachprüft:**
+
+  ```bash
+  grep -o 'UC2_RingBuff\.h#L[0-9L-]*' Docs/RingBuff_REF.md | while read r; do
+    a=${r#*#L}; s=${a%%-*}; printf '%-28s %s\n' "$r" "$(sed -n "${s}p" core/include/UC2_RingBuff.h)"; done
+  ```
+
+  Für die cpp-Verweise dasselbe mit `UC2_RingBuff\.cpp` und `core/src/UC2_RingBuff.cpp`.
+
+### Wait-Modus: Producer bleibt nicht mehr stehen, wenn sich ein Consumer anmeldet — Version 2.1.2 — 2026-11-13
+
+**Implementiert:** ja · **Committet:** ja (`ce2cf48` auf Branch `ARM_Fence`, Tag `v2.1.2` steht aus)
 
 - **Plan:** [.claude/currentPlan.md](currentPlan.md), freigegeben 2026-11-12. Dort stehen auch
   die Fehlerbeschreibung und die Messung.
@@ -68,16 +104,15 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
   - #91 je 200-mal: TSan 0 Fehlschläge (vorher 22–28/100), Debug 0 (vorher ~1/100).
   - Der neue Test 200-mal unter TSan: 0 Fehlschläge.
   - Torn-Tests im Profile-Build, 50 Runden in 26 s: 0 Fehlschläge.
-- **Nebenbefund, nicht behoben:** Die Verweise von `RingBuff_REF.md` auf den **Header** sind
-  schon vor dieser Änderung um etwa 12 Zeilen veraltet. Beispiel: `UC2_Consumer` steht dort bei
-  L183, im Header bei L195.
+- **Nebenbefund:** Die Verweise von `RingBuff_REF.md` auf den **Header** waren schon vor dieser
+  Änderung veraltet. Behoben im Eintrag darüber.
 - **Offen (Nutzer):**
-  - Committen; danach setze ich den Tag `v2.1.2`; dann pushen.
+  - Tag `v2.1.2` setzen (ich, nach Freigabe); dann pushen.
   - Auf dem Pi Checkliste §8 wiederholen (TSan mit `kernel8.img`).
 
 ### ARM-Checkliste: Abschnitt „Falls hier der RPI einfriert“ — 2026-11-12
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`ce2cf48`, zusammen mit 2.1.2)
 
 - **Anlass:** Auf dem Pi 5 fror der Rechner bei §6 mit `stress-ng` mehrfach ein, immer während
   Test #105. Ein neuer Versuch lief danach wieder durch; die Ursache ist ungeklärt.
