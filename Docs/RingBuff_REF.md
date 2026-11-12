@@ -72,7 +72,7 @@ lassen.
 
 `configure()` berechnet das Layout, fordert die Region über `UC2_MemoryOps::acquire` an (64-Byte-
 Alignment), nullt sie und legt die Objekte mit Placement-new an
-([UC2_RingBuff.cpp:741](../core/src/UC2_RingBuff.cpp#L741)).
+([UC2_RingBuff.cpp:746](../core/src/UC2_RingBuff.cpp#L746)).
 
 ```
 Offset 0                  UC2_SessionHeader             8448 B
@@ -229,7 +229,7 @@ Consumer und Producer sich nicht gegenseitig die Cache-Line entziehen.
 
 | Feld | Typ | Bedeutung |
 |---|---|---|
-| `active` | `atomic<uint32_t>` | ≠ 0, solange der Eintrag belegt ist |
+| `active` | `atomic<uint32_t>` | 0 = frei, 1 = aktiv, 2 = wird gerade angemeldet. Nur 1 hält den Producer im Wait-Modus auf; 2 hält den Eintrag frei, bis `ackSequence` gesetzt ist |
 | `ackSequence` | `atomic<uint64_t>` | Erste Sequenz, die **noch nicht** bestätigt ist |
 
 ### `UC2_Control` (576 B) — [L192](../core/include/UC2_RingBuff.h#L192)
@@ -312,12 +312,12 @@ Python-Hook. Alle vier Callbacks sind optional; `nullptr` wird übersprungen.
 
 | Feld | Aufgerufen … | Implementierung |
 |---|---|---|
-| `abiVersion` | geprüft in `addSink()` | [cpp:972](../core/src/UC2_RingBuff.cpp#L972) |
+| `abiVersion` | geprüft in `addSink()` | [cpp:977](../core/src/UC2_RingBuff.cpp#L977) |
 | `ctx` | an jeden Callback | — |
-| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:1028](../core/src/UC2_RingBuff.cpp#L1028) |
-| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:1109](../core/src/UC2_RingBuff.cpp#L1109) |
-| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:1071](../core/src/UC2_RingBuff.cpp#L1071) |
-| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:998](../core/src/UC2_RingBuff.cpp#L998) |
+| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:1033](../core/src/UC2_RingBuff.cpp#L1033) |
+| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:1114](../core/src/UC2_RingBuff.cpp#L1114) |
+| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:1076](../core/src/UC2_RingBuff.cpp#L1076) |
+| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:1003](../core/src/UC2_RingBuff.cpp#L1003) |
 
 **Verhalten im Detail**
 
@@ -481,7 +481,7 @@ Es gibt genau **einen** Producer. Ein zweiter gleichzeitiger `beginWrite()` wird
 
 | Methode | Beschreibung |
 |---|---|
-| `uint32_t registerConsumer()` | Belegt einen Eintrag in der Consumer-Tabelle. Der Cursor startet bei `committedCount`, ein spät hinzukommender Consumer bremst also nicht wegen alter Frames. Gibt `kAnonymousConsumer` zurück, wenn die Tabelle voll (8) oder der Puffer nicht konfiguriert ist. |
+| `uint32_t registerConsumer()` | Belegt einen Eintrag in der Consumer-Tabelle. Der Cursor startet bei `committedCount`, ein spät hinzukommender Consumer bremst also nicht wegen alter Frames. Der Startwert wird gesetzt, bevor der Eintrag zählt: Ein laufender Producer sieht nie einen aktiven Consumer mit veraltetem Cursor (bis 2.1.1 konnte er dann bis `waitTimeoutMs` stehen bleiben). Gibt `kAnonymousConsumer` zurück, wenn die Tabelle voll (8) oder der Puffer nicht konfiguriert ist. |
 | `void unregisterConsumer(uint32_t consumer)` | Gibt den Eintrag frei; der Consumer bremst den Producer nicht mehr |
 | `bool readLatest(ReadHandle& out, uint32_t consumer = kAnonymousConsumer)` | Liest den zuletzt veröffentlichten Frame. `false`, wenn noch nichts veröffentlicht wurde oder der Slot gerade neu beschrieben wird. |
 | `bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs)` | Blockiert, bis ein Frame mit Sequenz > `afterSequence` veröffentlicht ist (`-1`: irgendeiner), höchstens `timeoutMs`. `true`, wenn es ihn gibt; `false` nach dem Timeout oder sofort, wenn der Puffer nicht konfiguriert ist. Schläft per futex auf `UC2_Control::frameSignal`, das `commitWrite()` erhöht — statt `readLatest()` zu pollen. Funktioniert auch auf einem angehängten Ring; der Producer im anderen Prozess weckt. |

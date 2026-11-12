@@ -193,6 +193,68 @@ TEST_CASE("under Wait a keeping-up consumer loses nothing", "[ring][mt]")
     CHECK(rb.waitTimeouts() == 0);
 }
 
+TEST_CASE("registering a consumer never stalls a Wait-mode producer", "[ring][mt]")
+{
+    RingBuffer::Config cfg;
+    cfg.slotCount     = 8;
+    cfg.policy        = hik::FullPolicy::Wait;
+    cfg.waitTimeoutMs = 5000;
+
+    // A registration that the producer sees half done (counted, but with a stale
+    // cursor) puts it to sleep for waitTimeoutMs; nothing else would wake it. A
+    // fresh ring per round: on a ring that has run for a while the window proved
+    // too narrow to hit at all. "stopStreaming finishes ..." hits it far more often.
+    int      stalls   = 0;
+    uint64_t timeouts = 0;
+    for (int i = 0; i < 300; ++i)
+    {
+        RingBuffer rb(cfg);
+        REQUIRE(rb.setImageSize(4, 4));
+        REQUIRE(rb.setChannels(1));
+        REQUIRE(rb.configure());
+
+        const std::vector<uint8_t> src(static_cast<size_t>(rb.frameBytes()), 1);
+        std::atomic<bool> done(false);
+        std::thread producer([&]
+        {
+            while (!done.load())
+            {
+                rb.writeFrame(src.data(), src.size());
+            }
+        });
+
+        // Only a producer that overwrites slots consults the consumers at all.
+        while (rb.framesWritten() < cfg.slotCount)
+        {
+            std::this_thread::yield();
+        }
+
+        const uint64_t before = rb.framesWritten();
+        const uint32_t id     = rb.registerConsumer();
+        // Without any acknowledge the producer may still fill the ring: up to slotCount
+        // frames past the cursor the registration set, and that cursor is >= before.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (rb.framesWritten() < before + cfg.slotCount
+               && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::yield();
+        }
+        if (rb.framesWritten() < before + cfg.slotCount)
+        {
+            ++stalls;
+        }
+        rb.unregisterConsumer(id);   // wakes a stalled producer
+        done.store(true);
+        producer.join();
+        timeouts += rb.waitTimeouts();
+    }
+
+    // CHECK only here: a REQUIRE with the producer still running would
+    // std::terminate the test binary.
+    CHECK(stalls == 0);
+    CHECK(timeouts == 0);
+}
+
 TEST_CASE("readSlot and readLatest are safe from several threads at once", "[ring][mt]")
 {
     RingBuffer::Config cfg;

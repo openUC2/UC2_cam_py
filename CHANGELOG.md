@@ -6,6 +6,20 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-11-13
+
+### Fixed
+
+- **Ring buffer in `FullPolicy::Wait`: the producer could stall for up to `waitTimeoutMs`
+  when a consumer registered, or streaming to disk started, while it was writing.** The
+  consumer entry counted as active before its start cursor was set, so the producer could
+  see a stale cursor and go to sleep with nobody left to wake it. It then overwrote the
+  frame after the timeout with a "still holds unacknowledged frame" warning. The disk writer
+  now also acknowledges up to where it starts reading, so a ring that fills up while
+  streaming starts cannot hold the producer back either. The cameras of `uc2_cam_py` use
+  `FullPolicy::Overwrite` and were not affected; only C++ users of the ring buffer with
+  `FullPolicy::Wait` were.
+
 ## [2.1.1] - 2026-10-30
 
 ### Fixed

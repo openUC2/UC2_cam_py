@@ -1,8 +1,14 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-10-30 · Branch `ARM_Fence` · Commit `280ad7b` = Tag `v2.1.1` (noch nicht in `main` gemergt)
-**Letzte Arbeitsschritte:** Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1
-(oberster Eintrag). Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
+**Stand:** 2026-11-13 · Branch `ARM_Fence` · HEAD `30135e7`, Tag `v2.1.1` auf `280ad7b` (noch
+nicht in `main` gemergt). Version 2.1.2 ist umgesetzt, aber nicht committet; ebenso die
+Pi-Ergebnisse in STATUS, `Docs/ARM_Checkliste.md` und `Docs/Tooling.md`.
+**Nächster Schritt:** Der Nutzer committet. Danach setze ich den Tag `v2.1.2`
+(`git tag -a v2.1.2 -m "uc2_cam_py 2.1.2" <commit>`), und der Nutzer pusht. Auf dem Pi
+wiederholt der Nutzer Checkliste §8 (TSan mit `kernel8.img`).
+**Letzte Arbeitsschritte:** Version 2.1.2: Im Wait-Modus blieb der Producer stehen, wenn sich ein
+Consumer anmeldete (oberster Eintrag). Davor der Pi-5-Lauf der ARM-Checkliste (Einträge
+2026-11-12) und die Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1. Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
 (Build ohne bzw. mit unbrauchbarem MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im
 simulierten Bild.
 
@@ -11,6 +17,110 @@ Dauerinformation (Aufbau, Konventionen, Fallstricke, Buildbefehle), §5–§13 d
 Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
+
+### Wait-Modus: Producer bleibt nicht mehr stehen, wenn sich ein Consumer anmeldet — Version 2.1.2 — 2026-11-13
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Plan:** [.claude/currentPlan.md](currentPlan.md), freigegeben 2026-11-12. Dort stehen auch
+  die Fehlerbeschreibung und die Messung.
+- **Fehler:** `registerConsumer()` hat den Eintrag aktiv geschaltet, bevor `ackSequence` gesetzt
+  war, und den Producer danach nicht geweckt.
+  - Sah der Producer genau dazwischen nach, fand er einen aktiven Consumer mit veraltetem Cursor.
+    Er schlief dann bis `waitTimeoutMs` oder bis `unregisterConsumer()`.
+  - Das war die wahre Ursache des wackelnden Tests #91, kein Timing-Problem des Tests.
+  - Nur `FullPolicy::Wait` war betroffen. Die Kameras (Overwrite) und damit Python nicht.
+- **`core/src/UC2_RingBuff.cpp`:**
+  - `active` hat jetzt drei Zustände: `0` frei, `kConsumerClaimed` = 2, `kConsumerActive` = 1.
+    Die Konstanten stehen im anonymen Namespace.
+  - `registerConsumer()` belegt den Eintrag mit 2, setzt `ackSequence` und schaltet erst dann
+    per Release auf 1. `minAckSequence()` zählt nur `== kConsumerActive`.
+  - `FileStreamSink::onSessionStart()` bestätigt nach dem Setzen von `m_cursor` bis
+    `cursor − 1`, außerhalb von `m_mtx`. Das schließt den zweiten, nur theoretischen Fall: Läuft
+    der Ring zwischen Anmeldung und Cursor voll, wartet sonst der Producer auf ein Bild, das der
+    Writer nie liest.
+- **Header:** nur der Kommentar zu `active`, Zeilenzahl gleich.
+- **Neuer Test** „registering a consumer never stalls a Wait-mode producer“
+  (`test_ringbuffer_mt.cpp`, `[ring][mt]`). Er legt je Runde einen frischen Ring an, meldet
+  300-mal an und zählt Hänger von über 500 ms.
+  - **Abweichung vom Plan:** Der Test findet den Fehler ohne Fix nur selten. Gemessen an einer
+    Kopie von `HEAD` im Scratchpad:
+    - TSan: etwa jeder zweite Lauf mit 300 Runden hing, je 1–2 Hänger.
+    - Debug: kein Hänger in 2 × 3000 Runden.
+    - Mit einer einzigen Anmeldung je Prozess: TSan 5/100, Debug 0/100.
+  - Die erste Fassung (ein Ring, 300 Anmeldungen) fand den Fehler gar nicht.
+  - Ursache: Nur die erste Anmeldung im Prozess hat das weite Fenster, vermutlich durch
+    Kaltstart-Effekte. #91 trifft es öfter, weil es den Producer frischer erwischt.
+  - Auf Wunsch des Nutzers bleibt der Test als billiger zweiter Wächter (~0,1 s unter TSan).
+    Der eigentliche Nachweis ist #91. Ein deterministischer Test bräuchte eine Test-Naht im
+    Produktionscode; dagegen hat der Nutzer entschieden.
+- **Doku:**
+  - `RingBuff_REF.md` §4 (`active`) und §7.8 (`registerConsumer()`) angepasst.
+  - Die sechs verschobenen Verweise auf `UC2_RingBuff.cpp` sind korrigiert (+5);
+    `#L40-L59` ist unverändert.
+  - `ARM_Checkliste.md` §8: Statt „Bekannt, kein ARM-Problem“ steht dort jetzt „Ab 2.1.2
+    behoben“ und die Bitte, ein erneutes Auftreten zu melden.
+  - `VERSION`, die Kopfzeile der Schnittstellen-Doku und CHANGELOG `[2.1.2]` („Fixed“).
+  - Die Testzahlen in §4 sind angepasst: 139 / 135 / 120.
+- **Verifiziert (x86, GCC 16.2.1):**
+  - `uv run all_tests`: C++ 139/139, Python 207 passed / 22 skipped; das Paket meldet `2.1.2`.
+  - debug, asan, tsan, profile: je 139/139, ohne Warnungen.
+  - #91 je 200-mal: TSan 0 Fehlschläge (vorher 22–28/100), Debug 0 (vorher ~1/100).
+  - Der neue Test 200-mal unter TSan: 0 Fehlschläge.
+  - Torn-Tests im Profile-Build, 50 Runden in 26 s: 0 Fehlschläge.
+- **Nebenbefund, nicht behoben:** Die Verweise von `RingBuff_REF.md` auf den **Header** sind
+  schon vor dieser Änderung um etwa 12 Zeilen veraltet. Beispiel: `UC2_Consumer` steht dort bei
+  L183, im Header bei L195.
+- **Offen (Nutzer):**
+  - Committen; danach setze ich den Tag `v2.1.2`; dann pushen.
+  - Auf dem Pi Checkliste §8 wiederholen (TSan mit `kernel8.img`).
+
+### ARM-Checkliste: Abschnitt „Falls hier der RPI einfriert“ — 2026-11-12
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Anlass:** Auf dem Pi 5 fror der Rechner bei §6 mit `stress-ng` mehrfach ein, immer während
+  Test #105. Ein neuer Versuch lief danach wieder durch; die Ursache ist ungeklärt.
+- **Vermutung:** Netzteil oder Kühlung unter Volllast, nicht das Paket. Dafür spricht:
+  - Keine Echtzeit-Priorität, kein gesperrter Speicher.
+  - Der Ring von #105 hat nur 128 KiB.
+  - #105 braucht über 95 % der Laufzeit, ein Einfrieren trifft ihn also zufällig.
+- **`Docs/ARM_Checkliste.md` §6, unter dem Punkt des Nutzers:**
+  - Vorbeugen: Netzteil 5 V / 5 A und Kühlung; `pkill stress-ng`, weil Ctrl+C die Last nicht
+    beendet; `ctest --timeout 120`, weil die Presets kein Timeout setzen (Standard 1500 s).
+  - Eingrenzen in vier Schritten: Logs des vorigen Boots, Erreichbarkeit plus `gdb`-Backtrace,
+    Tests ohne Last, Last ohne Tests mit `vcgencmd get_throttled`.
+  - Dazu eine Auswertung.
+- **Ursache gefunden (2026-11-12):** Nach Ende der Tests, während `stress-ng` noch lief, war der
+  Pi aus: kein Ping, LED dauerhaft rot.
+  - `vcgencmd pmic_read_adc EXT5V_V` zeigte 4,97 V ohne Last.
+  - `/proc/device-tree/chosen/power/max_current` zeigte **900**. Das Netzteil handelt also keine
+    höhere Leistung aus; unter Volllast schaltet der Pi ab.
+  - Ein persistentes Journal gab es nicht. Der Drop-in mit `Storage=persistent` und
+    `SyncIntervalSec=10s` wurde dem Nutzer genannt.
+- **Danach in der Checkliste ergänzt:**
+  - §1: Netzteilprüfung (`EXT5V_V`, `max_current`, Sollwert 5000, Bedeutung von 3000 und 900).
+  - §9: die 600-mA-Grenze der USB-Anschlüsse bei schwachem Netzteil.
+  - §11: die Netzteilwerte in den Systemdaten und in der Ergebnistabelle.
+- **Weitere Ergebnisse vom Pi (2026-11-12):**
+  - §6 und die Gegenprobe auf `v2.1.0`: keine Umordnung.
+  - ASan: Build und Tests grün, mit dem Standard-Kernel.
+  - TSan, erster Versuch: `undefined reference` auf alle Catch2-Symbole. Der Baum war beschädigt,
+    vermutlich vom harten Ausfall. `rm -rf build/tsan` hat das behoben.
+  - TSan, danach: `FATAL: ThreadSanitizer: unsupported VMA range – Found 47 - Supported 39, 42
+    and 48`. Der Standard-Kernel nutzt 47 Bit, die TSan-Laufzeit von GCC 14.2 kennt das nicht.
+    Schon der Build scheitert, weil `catch_discover_tests` das Testprogramm startet.
+- **Darauf in der Doku ergänzt:**
+  - Checkliste §8 aufgeteilt: ASan mit dem Standard-Kernel; TSan mit `kernel8.img`, samt Ablauf
+    und Rückweg.
+  - `-j2` für Sanitizer-Builds.
+  - Der Fall „beschädigter Baum“ unter „Sonst“.
+  - §1 und die Ergebnistabelle angepasst.
+  - `Tooling.md` §7: Die Pi-Tabelle trennt jetzt ASan und TSan.
+- **Offen (Nutzer):**
+  - TSan mit `kernel8.img` laufen lassen.
+  - Mit dem offiziellen 27-W-Netzteil prüfen, ob `max_current` 5000 zeigt, und §6 mit Last
+    sowie §9 wiederholen.
 
 ### Seqlock-Fences für ARM + Checkliste für den ersten Pi-Lauf — Version 2.1.1 — 2026-10-30
 
@@ -763,15 +873,15 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 138 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 139 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 134 Tests (ohne [hardware])
+ctest --test-dir build/core       # 135 Tests (ohne [hardware])
 
-# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 119 Tests. HIK_MVS=AUTO|ON|OFF.
+# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 120 Tests. HIK_MVS=AUTO|ON|OFF.
 cmake -S core -B build/core-nomvs -G Ninja -DHIK_BUILD_TESTS=ON -DHIK_MVS=OFF
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
@@ -1047,14 +1157,23 @@ registrieren.
 6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die Seqlock-Fences dafür sind seit 2.1.1
    drin (oberster Eintrag). Der Nutzer arbeitet [Docs/ARM_Checkliste.md](../Docs/ARM_Checkliste.md)
    auf dem Pi ab und meldet die Ergebnistabelle zurück; erst dann ist dieser Punkt erledigt.
-7. **Wackelnder Test unter TSan:** „stopStreaming finishes although the producer keeps writing“
-   (`test_ringbuffer_stream.cpp:515`) scheitert im `tsan`-Build in etwa 25 % der Läufe,
+7. ~~**Wackelnder Test unter TSan**~~ — **erledigt 2026-11-13 mit Version 2.1.2** (oberster
+   Eintrag): #91 scheitert jetzt in 0 von 200 Läufen, unter TSan wie im Debug-Build.
+   Vorgeschichte: „stopStreaming finishes although the producer keeps writing“
+   (`test_ringbuffer_stream.cpp:515`) scheiterte im `tsan`-Build in etwa 25 % der Läufe,
    im `debug`-Build in etwa 1 %.
-   - Ursache: Nach den 20 ms Wartezeit hat der Schreib-Thread noch kein Bild gespeichert
-     („closed … after 0 frames“), und `REQUIRE_FALSE(records.empty())` schlägt an.
-   - Das ist ein Timing-Problem des Tests. Am Stand `2fdc842` ohne Fences gemessen: 28/100.
-   - Gefunden 2026-10-30, noch nicht behoben. Abhilfe wäre, vor `stopStreaming()` zu warten,
-     bis `streamFramesSaved() > 0`, statt fest 20 ms.
+   - **Berichtigt 2026-11-12:** Es ist **kein** Timing-Problem des Tests. Ursache ist ein echter
+     Fehler im Wait-Modus.
+     - `registerConsumer()` schaltet den Eintrag aktiv, bevor `ackSequence` gesetzt ist, und weckt
+       den Producer danach nicht.
+     - Der Producer schläft dann mit veraltetem Startwert bis zum Timeout oder bis
+       `unregisterConsumer()`.
+     - Nachgewiesen mit einer instrumentierten Kopie: Bei „0 frames“ gilt immer
+       `ack = cursor = stopAt`. Mit Wecken: 0 Fehlschläge in 100 TSan-Läufen.
+   - Plan, Fehlerbeschreibung und Fix: [.claude/currentPlan.md](currentPlan.md), Version 2.1.2.
+     Die frühere Idee, auf `streamFramesSaved() > 0` zu warten, hätte den Fehler verdeckt und ist
+     verworfen.
+   - Am Stand `2fdc842` gemessen: 28/100 unter TSan. Auf dem Pi 5 trat es ebenfalls auf.
 
 ### 11.3 Aus dem Code-Review vom 2026-09-03 weiterhin offen
 

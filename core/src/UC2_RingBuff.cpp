@@ -68,6 +68,11 @@ const uint32_t kMaxDimension = 65536;
 const uint32_t kMaxChannels  = 4096;
 const uint32_t kMaxSlots     = 65536;
 
+/// States of UC2_Consumer::active (0 is a free entry). A claimed entry is
+/// already taken but does not gate the producer until its cursor is set.
+const uint32_t kConsumerActive  = 1;
+const uint32_t kConsumerClaimed = 2;
+
 /// Round @p value up to the next multiple of @p alignment (a power of two).
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -1123,7 +1128,7 @@ uint64_t RingBuffer::minAckSequence() const
     for (uint32_t i = 0; i < kMaxConsumers; ++i)
     {
         const UC2_Consumer& c = m_control->consumers[i];
-        if (c.active.load(std::memory_order_acquire) != 0)
+        if (c.active.load(std::memory_order_acquire) == kConsumerActive)
         {
             lowest = std::min(lowest, c.ackSequence.load(std::memory_order_acquire));
         }
@@ -1345,14 +1350,17 @@ uint32_t RingBuffer::registerConsumer()
     {
         UC2_Consumer& c = m_control->consumers[i];
         uint32_t expected = 0;
-        if (c.active.compare_exchange_strong(expected, 1,
+        if (c.active.compare_exchange_strong(expected, kConsumerClaimed,
                                              std::memory_order_acq_rel,
                                              std::memory_order_acquire))
         {
             // Start at the current head: a consumer that joins late must not
-            // gate the producer on frames it was never going to read.
+            // gate the producer on frames it was never going to read. Set it
+            // BEFORE the entry counts: a producer must never gate on an active
+            // consumer whose cursor is still the stale one of a previous user.
             c.ackSequence.store(m_control->committedCount.load(std::memory_order_acquire),
-                                std::memory_order_release);
+                                std::memory_order_relaxed);
+            c.active.store(kConsumerActive, std::memory_order_release);
             return i;
         }
     }
@@ -1868,10 +1876,18 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
              "not hold frames back for the streamer");
     }
 
+    uint64_t cursor = 0;
     {
         std::lock_guard<std::mutex> lk(m_mtx);
         m_cursor  = m_owner.framesWritten();   // only save what arrives from now on
         m_running = true;
+        cursor    = m_cursor;
+    }
+    // Gate the producer from where we start reading, not from where we registered:
+    // otherwise a full ring in between leaves it waiting for a frame we never read.
+    if (m_consumer != kAnonymousConsumer && cursor > 0)
+    {
+        m_owner.acknowledge(m_consumer, cursor - 1);
     }
     m_writer = std::thread(&FileStreamSink::writerLoop, this);
 

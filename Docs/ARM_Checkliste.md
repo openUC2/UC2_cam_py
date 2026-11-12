@@ -26,13 +26,26 @@ dpkg --print-architecture       # arm64
 getconf PAGESIZE                # 16384 oder 4096
 gcc --version | head -1         # ≥ 12
 cmake --version | head -1       # ≥ 3.25
+vcgencmd pmic_read_adc EXT5V_V  # Eingangsspannung, ≈ 5,0–5,1 V
+od -An -tu4 --endian=big /proc/device-tree/chosen/power/max_current   # 5000
 ```
 
 - **Erwartet:** `aarch64` und `arm64`.
+- **Netzteil:**
+  - `max_current` ist der Strom in mA, den die Firmware dem Netzteil zutraut. Erwartet ist
+    `5000`, das liefert das offizielle 27-W-Netzteil (5,1 V / 5 A).
+  - `3000` heißt 3 A: Für Bauen und Testen ohne Last reicht das meist.
+  - `900` heißt: Das Netzteil kann keine höhere Leistung aushandeln (kein USB Power Delivery, oder
+    ein Kabel von USB-A auf USB-C). Damit schaltet der Pi unter Volllast ab. Er ist dann nicht mehr
+    erreichbar, und die LED leuchtet dauerhaft rot. So geschehen beim ersten Lauf in §6 mit
+    `stress-ng`.
+  - Unter 5000 dürfen die USB-Anschlüsse zusammen nur 600 mA abgeben. Das betrifft §9.
+  - **Sonst:** Vor §6 mit Last und vor §9 das offizielle Netzteil anschließen und die Werte erneut
+    prüfen.
 - **Seitengröße:**
   - Der Standard-Kernel des Pi 5 (`kernel_2712.img`) nutzt 16-KB-Seiten, `kernel8.img` 4-KB-Seiten.
-  - Bauen und Testen funktionieren mit beiden. valgrind braucht 4 KB
-    ([Tooling.md §7](Tooling.md#7-raspberry-pi-5)).
+  - Bauen und Testen funktionieren mit beiden. Nur TSan und valgrind brauchen 4 KB (§8,
+    [Tooling.md §7](Tooling.md#7-raspberry-pi-5)).
   - Den Wert für die Ergebnistabelle notieren.
 - **Sonst:** `armhf` bei `dpkg` heißt 32-Bit-Userland, auch wenn der Kernel 64-Bit ist. Das wird
   nicht unterstützt: Raspberry Pi OS **64-Bit** installieren.
@@ -128,6 +141,55 @@ ctest --preset profile -R "never torn|readSlot and readLatest" --repeat until-fa
 - **Sonst:** Ein `FAILED` bei `corrupt.load() == 0` bzw. `corrupt == 0` ist genau der Fehler, um
   den es hier geht. Bitte die Ausgabe und `git rev-parse --short HEAD` zurückmelden.
 
+- **Falls hier der RPI einfriert**, also keine neuen Zeilen mehr kommen und nur noch Stromlos-Machen
+  hilft:
+  - **Vorbeugen:**
+    - Ein Netzteil mit 5 V / 5 A (das offizielle 27-W-Netzteil) und eine aktive Kühlung
+      verwenden. Unter `stress-ng` laufen alle vier Kerne auf Volllast.
+    - Ctrl+C beendet `stress-ng` nicht. Es läuft im Hintergrund weiter, bis seine 15 Minuten um
+      sind, und jeder neue Start legt vier weitere Lastprozesse dazu. Nach dem Lauf und vor jedem
+      neuen Versuch deshalb `pkill stress-ng` ausführen.
+    - An den `ctest`-Aufruf `--timeout 120` anhängen. Die Presets setzen kein Timeout. Ohne diese
+      Option liefert ein hängender Test bis zu 25 Minuten lang keine Zeile und sieht dann aus wie
+      ein eingefrorener Pi.
+  - **Dass es gerade #105 trifft, sagt wenig.** Der Test braucht über 95 % der Laufzeit der drei
+    Tests, ein Einfrieren fällt also fast immer zufällig in ihn.
+  - **Eingrenzen:**
+    1. Die Logs des abgestürzten Laufs ansehen, direkt nach dem nächsten Hochfahren:
+       ```bash
+       journalctl -b -1 -k --no-pager | grep -iE 'voltage|thermal|throttl|oom|panic|bug|watchdog' | tail -20
+       journalctl -b -1 --no-pager | tail -30
+       ```
+       `Undervoltage detected!` heißt: Das Netzteil reicht nicht. Liefert `-b -1` nichts,
+       speichert das System seine Logs nicht über einen Neustart hinweg.
+    2. Beim nächsten Hänger vom PC aus prüfen, ob der Pi noch erreichbar ist: `ping <pi-adresse>`
+       und `ssh <user>@<pi-adresse>`. Ist er erreichbar, hängt nur der Test. Dann bitte diese
+       Ausgaben zurückmelden (`gdb` gegebenenfalls mit `sudo apt install gdb` installieren):
+       ```bash
+       ps -eo pid,stat,pcpu,etime,args | grep -E 'hikcam|stress' | grep -v grep
+       vcgencmd measure_temp; vcgencmd get_throttled
+       sudo gdb -p <PID von hikcam_core_tests> -batch -ex 'thread apply all bt' 2>&1 | tail -60
+       ```
+    3. Die Tests ohne Last laufen lassen, also den ersten `ctest`-Befehl dieses Abschnitts.
+    4. Die Last ohne Tests laufen lassen und in einer zweiten Shell mitlesen:
+       ```bash
+       stress-ng --cpu 4 --timeout 15m &
+       watch -n 2 'vcgencmd measure_temp; vcgencmd get_throttled'
+       ```
+       `get_throttled` sollte `0x0` zeigen. Die einzelnen Bits bedeuten:
+       - `0x1`: Unterspannung jetzt; `0x10000`: Unterspannung seit dem Start
+       - `0x4`: Takt wird gerade gedrosselt
+       - `0x8`: Temperaturgrenze erreicht
+  - **Auswertung:**
+    - Friert Schritt 4 allein ein, oder melden Schritt 1 bzw. 4 Unterspannung oder Drosselung,
+      liegt es an Netzteil oder Kühlung, nicht am Paket.
+    - Läuft Schritt 3 durch und friert der Pi nur mit Last ein, gilt dasselbe.
+    - Ist der Pi erreichbar und hängt nur der Test, ist es ein Fehler im Paket. Dann bitte die
+      Ausgaben aus Schritt 2 zurückmelden.
+    - Friert auch Schritt 3 ein und ist der Pi nicht mehr erreichbar, liegt es möglicherweise am
+      Kernel. Dann bitte die Logs aus Schritt 1 zurückmelden und den 4-KB-Kernel probieren
+      (siehe §8).
+
 **Gegenprobe (optional):** Derselbe Lauf auf dem Stand vor dem Fix, `v2.1.0`, in einem eigenen
 Worktree:
 
@@ -159,30 +221,89 @@ uv run py_tests -m "not hardware"
 
 ## 8. Sanitizer
 
+**ASan** läuft mit dem Standard-Kernel:
+
 ```bash
-cmake --preset asan && cmake --build --preset asan && ctest --preset asan
-cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
+cmake --preset asan && cmake --build --preset asan -j2 && ctest --preset asan
 ```
+
+**TSan braucht auf dem Pi 5 den 4-KB-Kernel.**
+- Mit dem Standard-Kernel scheitert schon `cmake --build --preset tsan`, und zwar beim Schritt
+  `Linking CXX executable core/tests/hikcam_core_tests`:
+
+  ```
+  FATAL: ThreadSanitizer: unsupported VMA range
+  FATAL: Found 47 - Supported 39, 42 and 48
+  CMake Error at …/CatchAddTests.cmake:70 (message): Error running test executable
+  ```
+
+- Warum das so ist:
+  - Der Standard-Kernel (`kernel_2712.img`, 16-KB-Seiten) nutzt einen virtuellen Adressraum von
+    47 Bit. Die TSan-Laufzeit von GCC 14 kennt auf aarch64 nur 39, 42 und 48 Bit, deshalb bricht
+    jedes TSan-Programm sofort ab.
+  - Schon der Build scheitert, weil CMake das frisch gelinkte Testprogramm einmal startet, um die
+    Testliste zu erstellen (`catch_discover_tests`).
+  - Das liegt am Kernel, nicht am Code.
+
+Ablauf mit dem 4-KB-Kernel (`kernel8.img`, 39 Bit):
+
+```bash
+tail -5 /boot/firmware/config.txt                 # der letzte Abschnitt sollte [all] sein
+echo 'kernel=kernel8.img' | sudo tee -a /boot/firmware/config.txt
+sudo reboot
+```
+
+```bash
+getconf PAGESIZE                                  # 4096
+cmake --preset tsan && cmake --build --preset tsan -j2 && ctest --preset tsan
+```
+
+**valgrind** braucht ebenfalls 4-KB-Seiten. Am besten läuft es gleich hier mit, siehe
+[Tooling.md §2 und §7](Tooling.md).
+
+**Zurück zum Standard-Kernel:** die Zeile `kernel=kernel8.img` wieder aus
+`/boot/firmware/config.txt` entfernen und neu starten. Den Standard-Kernel nutzen die Anwender,
+deshalb gehören die übrigen Schritte der Checkliste auf ihn.
+
+`-j2` lässt nur zwei Compiler gleichzeitig laufen. Sanitizer-Builds brauchen viel Arbeitsspeicher,
+und ein Build auf allen vier Kernen belastet den Pi wie `stress-ng`. Mit einem schwachen Netzteil
+kann er dabei abschalten (§1).
 
 - **Erwartet:** `100% tests passed` in beiden Läufen. Die vier Hardware-Tests stehen auf
   „Skipped“.
-- **Bekannt, kein ARM-Problem:** „stopStreaming finishes although the producer keeps writing“
-  scheitert unter TSan auch am PC immer wieder: In etwa einem Viertel der Läufe hat der
-  Schreib-Thread nach 20 ms noch kein Bild gespeichert (STATUS §11). Tritt nur dieser Fehler auf,
-  den Test einzeln wiederholen:
+- **Ab 2.1.2 behoben:** „stopStreaming finishes although the producer keeps writing“ scheiterte
+  bis 2.1.1 unter TSan in etwa einem Viertel der Läufe, am PC wie am Pi. Das war kein
+  Timing-Problem des Tests, sondern ein echter Fehler im Wait-Modus: Meldete sich ein Consumer
+  an, während der Producer schrieb, konnte der Producer bis `waitTimeoutMs` stehen bleiben
+  (CHANGELOG 2.1.2). Tritt der Fehler mit 2.1.2 noch auf, bitte melden, mit der Ausgabe von:
 
   ```bash
-  ctest --preset tsan -R "stopStreaming finishes"
+  ctest --preset tsan -R "stopStreaming finishes" --output-on-failure
   ```
 
 - **Sonst:**
-  - Bricht ein Sanitizer schon beim Start ab, etwa mit „unexpected memory mapping“ oder
-    „unsupported VMA range“, liegt das am Speicherlayout des Kernels, nicht am Code.
-  - Ausweg: den 4-KB-Kernel aktivieren ([Tooling.md §7](Tooling.md#7-raspberry-pi-5)) und den
-    Schritt wiederholen. Bitte in der Ergebnistabelle vermerken.
-- **valgrind** geht nur mit 4-KB-Seiten, siehe [Tooling.md §2 und §7](Tooling.md).
+  - Bricht ASan mit dem Standard-Kernel beim Start ab, etwa mit „unexpected memory mapping“,
+    liegt das ebenfalls am Speicherlayout des Kernels. Dann ASan wie TSan mit `kernel8.img`
+    laufen lassen und das in der Ergebnistabelle vermerken.
+  - Meldet der Linker `undefined reference` auf praktisch alle Catch2-Funktionen
+    (`Catch::AssertionHandler…`, `Catch::StringRef…`), ist der Build-Baum beschädigt. Das kommt
+    typischerweise von einem harten Ausfall des Pi, nachdem er Dateien geschrieben hatte (§1,
+    Netzteil). `--clean-first` reicht dann nicht. Den Baum ganz löschen und neu bauen; CMake lädt
+    Catch2 dabei erneut herunter, es braucht also Netz:
+
+    ```bash
+    rm -rf build/tsan                             # bzw. build/asan
+    cmake --preset tsan && cmake --build --preset tsan -j2
+    ```
 
 ## 9. Mit HikRobot-Kamera
+
+**Stromversorgung zuerst:** Eine USB3-Kamera braucht das 5-A-Netzteil, `max_current` muss in §1
+also `5000` zeigen. Erkennt der Pi ein schwächeres Netzteil, dürfen alle USB-Anschlüsse zusammen
+nur 600 mA abgeben. Die Kamera bekommt dann zu wenig Strom: Sie bricht ab, verliert Bilder oder
+wird gar nicht erkannt. Die Grenze mit `usb_max_current_enable=1` aufzuheben hilft dabei nicht,
+denn das Netzteil liefert den Strom trotzdem nicht. Eine GigE-Kamera mit eigener Versorgung (PoE
+oder Netzteil) betrifft das nicht.
 
 Einmal je Rechner, mit root: HikRobots Skripte für USB3-Kameras. Für GigE-Kameras sind es
 `set_rp_filter.sh` und `set_socket_buffer_size.sh`. Die Skripte vor dem Ausführen lesen.
@@ -241,6 +362,7 @@ Systemdaten einsammeln:
 ```bash
 { date -I; tr -d '\0' </proc/device-tree/model; echo; . /etc/os-release; echo "$PRETTY_NAME"
   uname -r; getconf PAGESIZE; gcc --version | head -1; cmake --version | head -1
+  vcgencmd pmic_read_adc EXT5V_V; od -An -tu4 --endian=big /proc/device-tree/chosen/power/max_current
   git rev-parse --short HEAD; cat External/hik/MVS/VERSION; } 2>/dev/null
 ```
 
@@ -249,7 +371,7 @@ Diese Ausgabe und die ausgefüllte Tabelle zurückmelden. Damit lässt sich STAT
 
 | § | Punkt | Ergebnis (ok / Fehler / übersprungen) | Bemerkung |
 |---|---|---|---|
-| 1 | System, Seitengröße | | |
+| 1 | System, Seitengröße, Netzteil (`max_current`) | | |
 | 3 | SDK `lib/aarch64` | | |
 | 4 | Import, `HAVE_MVS` | | |
 | 5 | `uv run c_tests` | | |
@@ -258,7 +380,7 @@ Diese Ausgabe und die ausgefüllte Tabelle zurückmelden. Damit lässt sich STAT
 | 6 | Gegenprobe `v2.1.0` | | |
 | 7 | `py_tests -m "not hardware"` | | |
 | 8 | ASan | | |
-| 8 | TSan | | |
+| 8 | TSan (mit `kernel8.img`) | | |
 | 9 | Hardware-Tests (Python, C++) | | |
 | 9 | Aufnahme: Auflösung, Bildrate, `dropped` | | |
 | 9 | Vorschaufenster | | |

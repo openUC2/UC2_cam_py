@@ -194,7 +194,7 @@ struct UC2_SlotRecord
 /// consumers do not ping-pong the producer's cursor between cores.
 struct UC2_Consumer
 {
-    std::atomic<uint32_t> active;       ///< non-zero while the slot is claimed
+    std::atomic<uint32_t> active;       ///< 0 free, 1 active, 2 being registered (not counted yet)
     uint32_t              reserved0;
     std::atomic<uint64_t> ackSequence;  ///< first sequence NOT yet acknowledged
     uint8_t               pad[kCacheLine - 16];
