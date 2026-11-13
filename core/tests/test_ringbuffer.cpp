@@ -398,6 +398,53 @@ TEST_CASE("waitForFrame reports only frames newer than the given sequence", "[ri
     CHECK_FALSE(rb.waitForFrame(1, 20));    // 1 is the newest
 }
 
+TEST_CASE("waitForFrame in WaitScope::Session gives up at once while recording is off", "[ring]")
+{
+    using hik::WaitScope;
+    RingBuffer rb(memConfig(4));
+    REQUIRE(configureSmall(rb));
+    const std::vector<uint8_t> src = pattern(0, rb.frameBytes());
+
+    // Never recorded: Session gives up at once, Ring keeps the timeout semantics
+    // (a ring may be written without a recording session).
+    auto t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(rb.waitForFrame(-1, 5000, WaitScope::Session));
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500));
+    t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(rb.waitForFrame(-1, 50, WaitScope::Ring));
+    CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(45));
+
+    REQUIRE(rb.startRecording());
+    REQUIRE(rb.writeFrame(src.data(), src.size()));
+    CHECK(rb.waitForFrame(-1, 0, WaitScope::Session));
+    CHECK_FALSE(rb.waitForFrame(0, 20, WaitScope::Session));   // recording: the plain timeout
+
+    rb.stopRecording();
+    CHECK(rb.waitForFrame(-1, 0, WaitScope::Session));   // a newer frame is there: still true
+    t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(rb.waitForFrame(0, 5000, WaitScope::Session));
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500));
+}
+
+TEST_CASE("abortWaits makes every later waitForFrame return at once", "[ring]")
+{
+    using hik::WaitScope;
+    RingBuffer rb(memConfig(4));
+    REQUIRE(configureSmall(rb));
+    REQUIRE(rb.startRecording());
+    const std::vector<uint8_t> src = pattern(0, rb.frameBytes());
+    REQUIRE(rb.writeFrame(src.data(), src.size()));
+
+    rb.abortWaits();
+    CHECK(rb.waitForFrame(-1, 0));   // a frame that is there is still reported
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(rb.waitForFrame(0, 5000, WaitScope::Ring));
+    CHECK_FALSE(rb.waitForFrame(0, 5000, WaitScope::Session));
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500));
+    RingBuffer::ReadHandle h;
+    CHECK(rb.readLatest(h));         // reading is not affected
+}
+
 TEST_CASE("sequences wrap around the ring and old ones become unreachable", "[ring]")
 {
     RingBuffer rb(memConfig(4));

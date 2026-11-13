@@ -6,6 +6,45 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-13
+
+### Added
+
+- **New images without polling.** Besides `get_last_image()`, which stays as it is, a program
+  can now wait or be called:
+  - `Camera.wait_for_image(timeout_s, newer_than=None)` waits without the GIL for an image
+    newer than `newer_than` (`None`: the next one) and returns the newest. It returns `None`
+    after the timeout, or at once when no new image can come: the camera is stopped (also
+    during the wait), closed, or its camera process is lost. A restart for `roi`/`binning`
+    during the wait is followed into the new session.
+  - `Camera.set_image_callback(callback, max_rate_hz=None)` calls `callback(img)` for every new
+    image, on a thread of its own (never on a camera thread). The newest image wins, so a slow
+    callback never builds up a backlog; `max_rate_hz` limits the calls. While the camera is
+    stopped the thread sleeps. One callback per camera.
+  - `Examples/newest_image.py` shows all three ways with the simulated camera.
+  - Semantics in the interface spec, new §7.10.
+- C++: `RingBuffer::waitForFrame()` takes a `WaitScope`; with `WaitScope::Session` it gives up
+  at once while recording is off. `RingBuffer::abortWaits()` ends every wait on a ring whose
+  producer process died.
+
+### Fixed
+
+- **Waiting for a frame slept through a stop or a restart.** `stop()`, `start()` and every
+  ROI/binning change end a session; a reader waiting in the old one was not woken and slept
+  until its timeout. `stopRecording()` now wakes the waiters, in every process. Before the
+  first `start()` the wait also slept for the full timeout; it now returns at once.
+- **A frame of an older session was taken for a newer one, or the other way round.** The
+  sequence starts at 0 in every session, so a reader that waited for "a frame after
+  sequence n" of the old session got none until the new session passed n. Newer is now decided
+  by the session (the ring) first, then by the sequence. The debug window used to work around
+  this with a short timeout.
+
+### Changed
+
+- C++: `CameraBase::waitForFrame()` and `RemoteCamera::waitForFrame()` are replaced by
+  `waitForImage(out, timeoutMs, after)`, which pins the newest image and follows restarts. The
+  private Python binding `wait_for_frame` became `wait_for_image`.
+
 ## [2.1.2] - 2026-11-13
 
 ### Fixed

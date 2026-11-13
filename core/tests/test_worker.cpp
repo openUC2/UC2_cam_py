@@ -93,6 +93,17 @@ bool eventually(F cond, int timeoutMs)
     return cond();
 }
 
+/// Milliseconds since construction or the last reset().
+struct Stopwatch
+{
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    void reset() { t0 = std::chrono::steady_clock::now(); }
+    int64_t ms() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    }
+};
+
 struct TempDir
 {
     fs::path path;
@@ -249,7 +260,7 @@ TEST_CASE("a simulated camera runs in its own process", "[worker]")
     CHECK(cam->isRunning());
     REQUIRE(cam->ring());
     CHECK(cam->ring()->isAttached());
-    REQUIRE(cam->waitForFrame(2, 5000));
+    REQUIRE(cam->ring()->waitForFrame(2, 5000));
 
     CameraBase::Image first;
     REQUIRE(cam->readLatest(first));
@@ -276,7 +287,7 @@ TEST_CASE("a simulated camera runs in its own process", "[worker]")
     REQUIRE(cam->setRoi(hik::SensorRoi{ 0, 0, 200, 100 }));
     CHECK(cam->lastChangeRestarted());
     CHECK(cam->ring() != oldRing);
-    REQUIRE(cam->waitForFrame(0, 5000));
+    REQUIRE(cam->ring()->waitForFrame(0, 5000));
     CameraBase::Image small;
     REQUIRE(cam->readLatest(small));
     CHECK(small.header.width == 200);
@@ -383,7 +394,7 @@ TEST_CASE("a killed camera process is reported and images already read stay vali
     std::unique_ptr<RemoteCamera> cam = openSim();
     cam->setBufferConfig(buffer(4));
     REQUIRE(cam->start());
-    REQUIRE(cam->waitForFrame(1, 5000));
+    REQUIRE(cam->ring()->waitForFrame(1, 5000));
     CameraBase::Image img;
     REQUIRE(cam->readLatest(img));
 
@@ -408,12 +419,142 @@ TEST_CASE("a killed camera process is reported and images already read stay vali
     CHECK(sum > 0);
     CameraBase::Image again;
     CHECK(cam->readLatest(again));   // the last session is still mapped
-    CHECK_FALSE(cam->waitForFrame(static_cast<int64_t>(cam->ring()->framesWritten()), 30));
+    CameraBase::Image next;
+    auto t0 = std::chrono::steady_clock::now();
+    CHECK_FALSE(cam->waitForImage(next, 10000));   // lost: nothing can come, so at once
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
 
-    const auto t0 = std::chrono::steady_clock::now();
+    t0 = std::chrono::steady_clock::now();
     cam->close();
     CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
     CHECK_FALSE(processExists(pid));
+}
+
+TEST_CASE("waitForImage on a camera process: next, newer, and at once when none can come", "[worker]")
+{
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    cam->setBufferConfig(buffer(8));
+    Stopwatch sw;
+    CameraBase::Image none;
+    CHECK_FALSE(cam->waitForImage(none, 10000));   // never started: at once
+    CHECK(sw.ms() < 1000);
+
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(0, 5000));
+    const uint64_t before = cam->ring()->framesWritten();
+    CameraBase::Image next;
+    REQUIRE(cam->waitForImage(next, 5000));
+    CHECK(next.handle.sequence() >= before);
+    CHECK(next.ring == cam->ring());
+    CameraBase::Image newer;
+    REQUIRE(cam->waitForImage(newer, 5000, &next));
+    CHECK(newer.handle.sequence() > next.handle.sequence());
+
+    cam->stop();
+    CameraBase::Image already;
+    CHECK(cam->waitForImage(already, 0, &next));   // a newer one is there: also when stopped
+    CameraBase::Image after;
+    sw.reset();
+    CHECK_FALSE(cam->waitForImage(after, 10000, &already));   // stopped: at once
+    CHECK_FALSE(cam->waitForImage(after, 10000));
+    CHECK(sw.ms() < 1000);
+
+    cam->close();
+    sw.reset();
+    CHECK_FALSE(cam->waitForImage(after, 10000));   // closed: at once
+    CHECK(sw.ms() < 1000);
+}
+
+TEST_CASE("waitForImage on a camera process returns at once when it is stopped during the wait", "[worker][mt]")
+{
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    cam->setBufferConfig(buffer(8));
+    REQUIRE(cam->setFrameRate(0.2));   // the next frame would come after 5 s
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(-1, 5000));
+
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        cam->stop();
+    });
+    Stopwatch sw;
+    CameraBase::Image img;
+    const bool got = cam->waitForImage(img, 10000);
+    const int64_t ms = sw.ms();
+    stopper.join();
+    CHECK_FALSE(got);
+    CHECK(ms < 2000);
+    CHECK_FALSE(cam->isRunning());   // returned after the stop had been answered
+}
+
+TEST_CASE("waitForImage on a camera process follows a restart into the new session", "[worker][mt]")
+{
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    cam->setBufferConfig(buffer(8));
+    REQUIRE(cam->setFrameRate(0.2));   // only the restart can bring a frame within 5 s
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(-1, 5000));
+    CameraBase::Image first;
+    REQUIRE(cam->readLatest(first));
+
+    std::thread changer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(cam->setRoi(hik::SensorRoi{ 0, 0, 200, 100 }));
+    });
+    Stopwatch sw;
+    CameraBase::Image img;
+    const bool got = cam->waitForImage(img, 10000, &first);
+    const int64_t ms = sw.ms();
+    changer.join();
+    REQUIRE(got);
+    CHECK(ms < 2000);
+    CHECK(img.ring != first.ring);
+    CHECK(img.handle.sequence() == 0);
+    CHECK(img.header.width == 200);
+    CHECK(img.header.height == 100);
+}
+
+TEST_CASE("on a camera process an image of an older session is older than every current frame", "[worker]")
+{
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    cam->setBufferConfig(buffer(8));
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(29, 5000));
+    CameraBase::Image old;
+    REQUIRE(cam->readLatest(old));
+
+    REQUIRE(cam->setFrameRate(0.5));   // the new session would need a minute to pass `old`
+    REQUIRE(cam->setRoi(hik::SensorRoi{ 0, 0, 200, 100 }));
+    REQUIRE(cam->lastChangeRestarted());
+    Stopwatch sw;
+    CameraBase::Image img;
+    REQUIRE(cam->waitForImage(img, 10000, &old));
+    CHECK(sw.ms() < 2000);
+    CHECK(img.ring != old.ring);
+    CHECK(img.handle.sequence() < old.handle.sequence());
+}
+
+TEST_CASE("waitForImage returns at once when the camera process is killed during the wait", "[worker][mt]")
+{
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    cam->setBufferConfig(buffer(8));
+    REQUIRE(cam->setFrameRate(0.2));
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(-1, 5000));
+
+    const pid_t pid = cam->pid();
+    std::thread killer([pid] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        ::kill(pid, SIGKILL);
+    });
+    Stopwatch sw;
+    CameraBase::Image img;
+    const bool got = cam->waitForImage(img, 10000);
+    const int64_t ms = sw.ms();
+    killer.join();
+    CHECK_FALSE(got);
+    CHECK(ms < 2000);   // the recording flag stays on in the orphaned ring: abortWaits() woke us
+    CHECK(cam->isLost());
 }
 
 TEST_CASE("the log messages of the camera process carry its source tag", "[worker]")

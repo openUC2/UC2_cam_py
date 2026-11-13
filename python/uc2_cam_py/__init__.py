@@ -9,6 +9,11 @@ ring buffer, optional recording to disk and zero-copy image access::
         img = cam.get_last_image()          # ImgData | None
         if img is not None:
             print(img.data.shape, img.time_ns)
+        img = cam.wait_for_image(timeout_s=1.0, newer_than=img)   # blocks without the GIL
+        cam.set_image_callback(lambda img: print(img.sequence))  # on a thread of its own
+
+The three ways to get the newest image - polling, waiting, callback - are shown
+in ``Examples/newest_image.py``.
 
 Vendors: "HikRobot" (MVS SDK) and "Simulated" (synthetic images, no hardware).
 The interface specification is ``Docs/UC2_cam_py_interface.md``.

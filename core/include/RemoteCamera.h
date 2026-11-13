@@ -4,6 +4,7 @@
 #include <sys/types.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <map>
@@ -111,7 +112,9 @@ public:
     bool isRunning() const { return m_running.load(); }
 
     bool readLatest(CameraBase::Image& out);
-    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs);
+    /// As CameraBase::waitForImage(). Also returns false at once when the
+    /// camera is closed or lost during the wait.
+    bool waitForImage(CameraBase::Image& out, uint32_t timeoutMs, const CameraBase::Image* after = nullptr);
     bool readSlot(uint32_t slot, CameraBase::Image& out);
 
     std::shared_ptr<RingBuffer> ring() const;
@@ -154,6 +157,13 @@ private:
     bool callValue(ipc::Quantity q, double& v);
     bool callSize(ipc::Op op, int64_t& w, int64_t& h);
     ValueRange callRange(ipc::Quantity q);
+    /// Run @p f, a call that can end or replace the session (start, stop, ROI,
+    /// binning), counted in m_sessionCalls so that waitForImage() can tell a
+    /// restart from a stop.
+    template <typename F> auto sessionCall(F f) -> decltype(f());
+    /// The current ring once no session call is in flight; null if the camera
+    /// is lost or closing, or @p deadline passes first.
+    std::shared_ptr<RingBuffer> settledRing(std::chrono::steady_clock::time_point deadline);
     void receiveLoop();
     void handleEvent(ipc::Message& msg, int fd);
     /// Declare the camera lost (once): fail all waiting and future calls, log why.
@@ -184,6 +194,7 @@ private:
     std::string                       m_workerVersion;   ///< from the Hello, "" if it had none
     bool                              m_lost    = false;
     bool                              m_closing = false;
+    int                               m_sessionCalls = 0;   ///< see sessionCall()
     std::shared_ptr<RingBuffer>       m_ring;       ///< attached ring of the current session
     CameraBase::BufferConfig          m_cfg;
 

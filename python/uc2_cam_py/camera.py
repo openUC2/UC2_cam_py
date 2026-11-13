@@ -15,17 +15,23 @@ import json
 import math
 import numbers
 import os
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
 
-from . import _logging, _preview, _resources, defaults
+from . import _callback, _logging, _preview, _resources, defaults
 from .data import ImgData, ImgMetaData
 
 PathLike = str | os.PathLike[str]
 Range = tuple[float, float]
 Roi = tuple[int, int, int, int]
+
+#: Longest wait the C++ core accepts, in ms (``uint32_t``): about 49.7 days.
+MAX_WAIT_MS = 2**32 - 1
 
 #: Connection types accepted by :func:`create_camera` (canonical spelling).
 CONNECTION_TYPES: tuple[str, ...] = ("USB3", "GigE")
@@ -97,6 +103,26 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, numbers.Integral) and not isinstance(value, bool)
 
 
+def _wait_newer(
+    backend: Any, newer_than: ImgData | None, timeout_ms: int, any_image: bool = False
+) -> ImgData | None:
+    """Wait without the GIL for an image newer than ``newer_than``.
+
+    ``newer_than=None`` means the next image completed after the call, or with
+    ``any_image`` any image (also one that is already there). Shared by
+    :meth:`Camera.wait_for_image`, the image callback and the debug window.
+    Holds the backend, not the camera.
+    """
+    after = None if newer_than is None else newer_than._handle
+    handle = backend.wait_for_image(after, int(timeout_ms), bool(any_image))
+    return None if handle is None else ImgData._from_handle(handle)
+
+
+def _read_latest(backend: Any) -> ImgData | None:
+    handle = backend.read_latest()
+    return None if handle is None else ImgData._from_handle(handle)
+
+
 class Camera:
     """A camera with a ring buffer, optional recording to disk and logging.
 
@@ -131,6 +157,8 @@ class Camera:
         if self._log_source:
             _logging.register_source(self._log_source, logger)
         self._debug_window: _preview.DebugWindow | None = None
+        self._image_callback: _callback.ImageDispatcher | None = None
+        self._image_callback_lock = threading.Lock()   # creates the dispatcher once
         self._buffer_size = int(buffer_size)
         self._store_image_data = bool(store_image_data)
         path = defaults.IMAGE_FILE_PATH if image_file_path is None else image_file_path
@@ -164,7 +192,7 @@ class Camera:
         if debug_window:
             self._debug_window = _preview.DebugWindow(
                 self.get_last_image,
-                self._backend.wait_for_frame,
+                partial(_wait_newer, self._backend),
                 f"uc2_cam_py debug - {self.VENDOR} {self.model} SN {self.serial}",
                 self._log,
             )
@@ -688,8 +716,102 @@ class Camera:
             ImgData | None: Zero-copy image, or None if no image has been
             recorded yet.
         """
-        handle = self._backend.read_latest()
-        return None if handle is None else ImgData._from_handle(handle)
+        return _read_latest(self._backend)
+
+    def wait_for_image(self, timeout_s: float, newer_than: ImgData | None = None) -> ImgData | None:
+        """Wait for an image newer than ``newer_than`` and return the newest one.
+
+        Newer means a later image of the same session, or any image of a later
+        session (``sequence`` starts at 0 in every session). The wait runs
+        without the GIL. If the acquisition is restarted meanwhile (``roi``,
+        ``binning``, ``start()`` from another thread), the wait goes on in the
+        new session; the image then may have a different shape.
+
+        Args:
+            timeout_s: Longest wait in seconds; 0 only checks.
+            newer_than: An image read from this camera, or None for the next
+                image completed after the call.
+
+        Returns:
+            ImgData | None: Zero-copy image (see :meth:`ImgData.is_valid`).
+            None after ``timeout_s`` - or at once when no new image can come:
+            the camera is stopped (or never started), or it is stopped, closed
+            or loses its camera process during the wait.
+
+        Raises:
+            RuntimeError: The camera is closed or its camera process has ended.
+            TypeError: ``timeout_s`` is not a number, ``newer_than`` not an ImgData.
+            ValueError: ``timeout_s`` is negative, not finite or above
+                :data:`MAX_WAIT_MS`; ``newer_than`` was not read from a camera.
+        """
+        self._require_open()
+        if not _is_real(timeout_s):
+            raise TypeError(f"timeout_s must be a number, got {type(timeout_s).__name__}")
+        if not math.isfinite(timeout_s) or timeout_s < 0:
+            raise ValueError(f"timeout_s must be finite and >= 0, got {timeout_s}")
+        timeout_ms = math.ceil(float(timeout_s) * 1000.0)
+        if timeout_ms > MAX_WAIT_MS:
+            raise ValueError(f"timeout_s must be at most {MAX_WAIT_MS / 1000:.0f} s, got {timeout_s}")
+        if newer_than is not None:
+            if not isinstance(newer_than, ImgData):
+                raise TypeError(f"newer_than must be an ImgData or None, got {type(newer_than).__name__}")
+            if newer_than._handle is None:
+                raise ValueError("newer_than must be an image read from the camera, not a constructed ImgData")
+        return _wait_newer(self._backend, newer_than, timeout_ms)
+
+    def set_image_callback(
+        self, callback: Callable[[ImgData], Any] | None, max_rate_hz: float | None = None
+    ) -> None:
+        """Have ``callback(img)`` called for every new image; ``None`` removes it.
+
+        One callback per camera; setting one replaces the previous one (logged,
+        INFO). The callback gets the images completed after it was set - set
+        before ``start()``, the first image of the session, too. It runs on a
+        thread of its own, never on a camera thread: hand
+        work over to your GUI thread or event loop from there (Qt signal,
+        ``loop.call_soon_threadsafe``). The newest image wins: a callback that
+        is slower than the camera gets the newest image each time, gaps show in
+        ``ImgData.sequence``; the camera never waits for it. The callback
+        survives ``stop()``/``start()`` and restarts; while the camera is
+        stopped, its thread sleeps. ``close()`` removes it.
+
+        When this method (or ``close()``) returns, no further call of the old
+        callback begins; a running call is waited for, unless this method is
+        called from the callback itself. An exception in the callback is
+        logged (ERROR, the first one with traceback, further ones counted) and
+        does not stop the calls.
+
+        Args:
+            callback: Called with one ``ImgData``; or None.
+            max_rate_hz: At most this many calls per second (e.g. for a live
+                view); None: as often as images come.
+
+        Raises:
+            TypeError: ``callback`` is not callable, ``max_rate_hz`` not a number.
+            ValueError: ``max_rate_hz`` is not positive and finite.
+            RuntimeError: The camera is closed (only when setting a callback).
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError(f"callback must be callable or None, got {type(callback).__name__}")
+        if max_rate_hz is not None:
+            if not _is_real(max_rate_hz):
+                raise TypeError(f"max_rate_hz must be a number or None, got {type(max_rate_hz).__name__}")
+            if not math.isfinite(max_rate_hz) or max_rate_hz <= 0:
+                raise ValueError(f"max_rate_hz must be positive and finite, got {max_rate_hz}")
+        with self._image_callback_lock:
+            if callback is None:
+                dispatcher = self._image_callback
+            else:
+                self._require_open()
+                if self._image_callback is None:
+                    backend = self._backend
+                    self._image_callback = _callback.ImageDispatcher(
+                        partial(_wait_newer, backend), partial(_read_latest, backend),
+                        lambda: bool(backend.is_running), self._log,
+                    )
+                dispatcher = self._image_callback
+        if dispatcher is not None:
+            dispatcher.set(callback, max_rate_hz)
 
     def get_image(self, index: int) -> ImgData:
         """Return the image held by buffer slot ``index``.
@@ -766,6 +888,8 @@ class Camera:
             message = "acquisition could not be started (see the log for the reason)"
             self._log.error(message)
             raise RuntimeError(message)
+        if self._image_callback is not None:
+            self._image_callback.session_changed()   # its thread sleeps while the camera is stopped
 
     def stop(self) -> None:
         """Stop acquiring. Recorded images stay readable until the next start()."""
@@ -777,10 +901,15 @@ class Camera:
         """Stop and release the camera. Images already read stay valid."""
         if self._closed:
             return
+        dispatcher = self._image_callback
+        if dispatcher is not None:   # no new callback call from here on; a running one finishes
+            dispatcher.close()
         if self._debug_window is not None:   # before the backend: the window thread reads from it
             self._debug_window.close()
             self._debug_window = None
-        self._backend.close()
+        self._backend.close()        # also ends the dispatcher's wait for an image
+        if dispatcher is not None:
+            dispatcher.join()        # not from the callback itself
         self._closed = True
         _logging.flush()   # the core's shutdown messages first, then ours
         self._forget_log_source()

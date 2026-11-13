@@ -182,6 +182,19 @@ void futexWakeAll(std::atomic<uint32_t>& word)
 #endif
 }
 
+/// Wake the readers in waitForFrame(), in this process or another one. Bumping
+/// the word after the state they check (committedCount, recording) is what
+/// lets a waiter that saw the old state rely on the futex comparison; the
+/// syscall is skipped while nobody sleeps.
+void signalFrameWaiters(UC2_Control& control)
+{
+    control.frameSignal.fetch_add(1, std::memory_order_seq_cst);
+    if (control.frameWaiters.load(std::memory_order_seq_cst) != 0)
+    {
+        futexWakeAll(control.frameSignal);
+    }
+}
+
 // Seqlock fences. The seqlock counter alone orders nothing it does not touch:
 // a release on the odd value does not hold back the stores AFTER it, and an
 // acquire on the re-check does not hold back the loads BEFORE it. x86 never
@@ -1061,7 +1074,10 @@ void RingBuffer::stopRecording()
     {
         return;
     }
-    m_control->recording.store(0, std::memory_order_release);
+    m_control->recording.store(0, std::memory_order_seq_cst);
+    // No frame can come any more: wake WaitScope::Session readers now, in this
+    // and every other process, not only after the file has been closed.
+    signalFrameWaiters(*m_control);
     closeStreamLocked();
     endSinks(m_sinks.size());
     INFO("RingBuffer: recording stopped after " + std::to_string(framesWritten()) + " frames");
@@ -1269,16 +1285,7 @@ bool RingBuffer::commitWrite(WriteHandle& handle, uint64_t nbytes, int64_t tsAft
     handle.m_data  = nullptr;
     m_writeBusy.store(false, std::memory_order_release);
 
-    // Wake readers in waitForFrame(), in this process or another one. Bumping
-    // the word after committedCount is what lets a waiter that saw the old
-    // value rely on the futex comparison; the syscall is skipped while nobody
-    // sleeps.
-    m_control->frameSignal.fetch_add(1, std::memory_order_seq_cst);
-    if (m_control->frameWaiters.load(std::memory_order_seq_cst) != 0)
-    {
-        futexWakeAll(m_control->frameSignal);
-    }
-
+    signalFrameWaiters(*m_control);   // after committedCount
     dispatchFrame(*rec, payload, n);
     return true;
 }
@@ -1529,7 +1536,7 @@ bool RingBuffer::readLatest(ReadHandle& out, uint32_t consumer)
     return acquireSlot(static_cast<uint32_t>(sequence % m_cfg.slotCount), &sequence, out, consumer);
 }
 
-bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
+bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs, WaitScope scope)
 {
     if (!m_configured)
     {
@@ -1544,13 +1551,21 @@ bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
     const int64_t deadline = monotonicNs() + static_cast<int64_t>(timeoutMs) * 1000000ll;
     for (;;)
     {
-        // Sample the futex word BEFORE the check: a commit after the check
-        // changes it, so the futex call below returns at once instead of
-        // sleeping through that frame.
+        // Sample the futex word BEFORE the checks: a commit, stopRecording() or
+        // abortWaits() after them changes it, so the futex call below returns
+        // at once instead of sleeping through that event.
         const uint32_t signal = m_control->frameSignal.load(std::memory_order_seq_cst);
         if (newer())
         {
             return true;
+        }
+        if (m_waitsAborted.load(std::memory_order_seq_cst))
+        {
+            return false;
+        }
+        if (scope == WaitScope::Session && m_control->recording.load(std::memory_order_seq_cst) == 0)
+        {
+            return false;   // stopped: nothing newer can be committed any more
         }
         const int64_t left = deadline - monotonicNs();
         if (left <= 0)
@@ -1560,6 +1575,17 @@ bool RingBuffer::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
         m_control->frameWaiters.fetch_add(1, std::memory_order_seq_cst);
         futexWait(m_control->frameSignal, signal, left);
         m_control->frameWaiters.fetch_sub(1, std::memory_order_seq_cst);
+    }
+}
+
+void RingBuffer::abortWaits()
+{
+    m_waitsAborted.store(true, std::memory_order_seq_cst);
+    if (m_configured)
+    {
+        // Also wakes waiters of other processes on this region; they find
+        // nothing changed for them and go back to sleep.
+        signalFrameWaiters(*m_control);
     }
 }
 

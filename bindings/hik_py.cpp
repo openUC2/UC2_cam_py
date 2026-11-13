@@ -210,6 +210,23 @@ py::object readImage(Cam& c, bool latest, uint32_t slot)
     return py::cast(std::move(ref));
 }
 
+/// Wait without the GIL for an image newer than @p after, see
+/// CameraBase::waitForImage(). Without @p after: the next one, or with
+/// @p anyFrame any image (also one that is already there). The caller holds
+/// @p after, so the pointer stays valid while the GIL is released.
+template <typename Cam>
+py::object waitImage(Cam& c, const ImageRef* after, uint32_t timeoutMs, bool anyFrame)
+{
+    std::unique_ptr<ImageRef> ref(new ImageRef());
+    const hik::CameraBase::Image none{};   // of no session: older than every image
+    const hik::CameraBase::Image* prev = after != nullptr ? &after->img : (anyFrame ? &none : nullptr);
+    if (!noGil([&] { return c.waitForImage(ref->img, timeoutMs, prev); }))
+    {
+        return py::none();
+    }
+    return py::cast(std::move(ref));
+}
+
 /// The camera calls, bound identically for CameraBase (device in this process)
 /// and RemoteCamera (device in a camera process), so the Python layer cannot
 /// tell the two apart. Every call that reaches the device runs without the GIL.
@@ -300,10 +317,14 @@ void bindCameraApi(py::class_<Cam, Holder>& cls)
 
         .def("read_latest", [](Cam& c) { return readImage(c, true, 0); },
             "ImageHandle | None: The newest complete frame, None if there is none yet.")
-        .def("wait_for_frame", &Cam::waitForFrame,
-            py::arg("after_sequence"), py::arg("timeout_ms"), GilFree(),
-            "bool: Wait (without the GIL) until a frame newer than `after_sequence` (-1: any)\n"
-            "is in the ring; False after `timeout_ms`.")
+        .def("wait_for_image",
+             [](Cam& c, const ImageRef* after, uint32_t timeout_ms, bool any_frame) {
+                 return waitImage(c, after, timeout_ms, any_frame); },
+             py::arg("after").none(true), py::arg("timeout_ms"), py::arg("any_frame") = false,
+             "ImageHandle | None: Wait (without the GIL) for a frame newer than `after` (None: the\n"
+             "next one; with any_frame=True any frame) and return the newest. A restart is followed\n"
+             "into the new session. None after `timeout_ms`, or at once when none can come (not\n"
+             "started, stopped, closed, lost).")
         .def("read_slot", [](Cam& c, uint32_t slot) { return readImage(c, false, slot); },
             py::arg("slot"),
             "ImageHandle | None: Frame in ring slot `slot`, None if empty or out of range.")

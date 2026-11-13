@@ -70,15 +70,21 @@ def test_no_debug_window_by_default(open_camera) -> None:
 
 
 def test_the_backend_waits_for_new_frames(open_camera) -> None:
-    """The call the debug window blocks on until a new frame is in the ring."""
+    """The call the debug window and the image callback block on until a new frame is in the ring."""
     cam = open_camera()
     backend = cam._backend
-    assert not backend.wait_for_frame(-1, 10)            # no ring before the first start
+    started = time.monotonic()
+    assert backend.wait_for_image(None, 5000) is None    # no ring before the first start: at once
+    assert time.monotonic() - started < 1.0
     cam.start()
-    assert backend.wait_for_frame(-1, 2000)
-    assert backend.wait_for_frame(cam.get_last_image().sequence, 2000)   # 100 fps: the next one
+    first = backend.wait_for_image(None, 2000)
+    assert first is not None
+    following = backend.wait_for_image(first, 2000)      # 100 fps: the next one
+    assert following is not None and following.sequence > first.sequence
     cam.stop()
-    assert not backend.wait_for_frame(cam.get_last_image().sequence, 50)   # stopped: nothing newer
+    started = time.monotonic()
+    assert backend.wait_for_image(cam.get_last_image()._handle, 5000) is None   # stopped: at once
+    assert time.monotonic() - started < 1.0
 
 
 def test_debug_window_without_display_logs_an_error(open_camera, rec_logger, monkeypatch) -> None:

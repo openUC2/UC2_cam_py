@@ -50,7 +50,8 @@ UC2_cam_py/
 ├── Examples/                 # programs built on the core (-DHIK_BUILD_EXAMPLES, default ON)
 │   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
 │   ├── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
-│   └── export_recordings.py  #   Python: export recordings as OME-TIFF and read them back
+│   ├── export_recordings.py  #   Python: export recordings as OME-TIFF and read them back
+│   └── newest_image.py       #   Python: the newest image by polling, waiting or callback
 ├── bindings/
 │   └── hik_py.cpp            # pybind11 module (_hik), low level
 ├── python/uc2_cam_py/        # the Python package
@@ -59,6 +60,7 @@ UC2_cam_py/
 │   ├── hikrobot.py           #   HikRobot vendor class (+ model table)
 │   ├── simulated.py          #   simulated vendor class
 │   ├── _preview.py           #   live-view window behind create_camera(debug_window=True)
+│   ├── _callback.py          #   the thread behind Camera.set_image_callback()
 │   ├── _process.py           #   starts the camera process (separate_process=True)
 │   ├── exporter.py           #   list recordings, export them as OME-TIFF
 │   ├── _uc2rb.py             #   reader for the .uc2rb recording files
@@ -257,6 +259,17 @@ with uc2_cam_py.create_camera(
     print(cam.recording_file, meta.width, meta.height)
     cam.store_image_data = True         # ... and on again: a new .uc2rb file, no restart
     cam.stop()
+```
+
+Besides polling with `get_last_image()`, a program can wait for the next image -
+`cam.wait_for_image(timeout_s=1.0, newer_than=img)`, without the GIL - or have a function
+called for every new image with `cam.set_image_callback(fn)`, on a thread of its own. Both end
+at once when the camera is stopped or closed
+([interface spec §7.10](Docs/UC2_cam_py_interface.md#710-waiting-for-new-images-and-callbacks)).
+All three ways, with the simulated camera:
+
+```bash
+uv run python Examples/newest_image.py
 ```
 
 Live view without extra dependencies — `debug_window=True` is the only way to open a

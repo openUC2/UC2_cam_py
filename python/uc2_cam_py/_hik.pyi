@@ -149,8 +149,14 @@ class _CameraApi:
     def close(self) -> None: ...
 
     def read_latest(self) -> ImageHandle | None: ...
-    def wait_for_frame(self, after_sequence: int, timeout_ms: int) -> bool:
-        """Wait (without the GIL) for a frame newer than `after_sequence` (-1: any)."""
+    def wait_for_image(
+        self, after: ImageHandle | None, timeout_ms: int, any_frame: bool = False
+    ) -> ImageHandle | None:
+        """Wait (without the GIL) for a frame newer than `after` (None: the next one; with
+        `any_frame` any frame, also one that is already there).
+
+        Follows a restart into the new session; None after `timeout_ms`, or at once
+        when no frame can come (not started, stopped, closed, lost)."""
     def read_slot(self, slot: int) -> ImageHandle | None: ...
     def slot_count(self) -> int: ...
     def session_header(self) -> dict | None: ...

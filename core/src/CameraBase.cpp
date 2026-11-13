@@ -2,6 +2,7 @@
 
 #include "hikLog.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -474,17 +475,64 @@ bool CameraBase::readLatest(Image& out)
     return true;
 }
 
-bool CameraBase::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
+bool CameraBase::waitForImage(Image& out, uint32_t timeoutMs, const Image* after)
 {
-    // The local shared_ptr keeps the ring alive if a restart replaces it
-    // meanwhile; the caller then wakes at the latest after timeoutMs.
+    if (out.handle.held())
+    {
+        ERR("CameraBase::waitForImage: the output image already holds a frame");
+        return false;
+    }
+    const int64_t deadline = monotonicNs() + static_cast<int64_t>(timeoutMs) * 1000000ll;
+    // The local shared_ptr keeps a ring alive that a restart replaces meanwhile.
     std::shared_ptr<RingBuffer> r = ring();
     if (!r)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
-        return false;
+        return false;   // never started: nothing can come without a start()
     }
-    return r->waitForFrame(afterSequence, timeoutMs);
+    int64_t afterSeq = -1;   // a frame of a later ring than after's is newer anyway
+    if (after == nullptr)
+    {
+        afterSeq = static_cast<int64_t>(r->framesWritten()) - 1;
+    }
+    else if (after->ring == r)
+    {
+        afterSeq = static_cast<int64_t>(after->handle.sequence());
+    }
+    for (;;)
+    {
+        const int64_t  left = std::max<int64_t>(0, deadline - monotonicNs());
+        const uint32_t ms   = static_cast<uint32_t>((left + 999999) / 1000000);
+        if (r->waitForFrame(afterSeq, ms, WaitScope::Session))
+        {
+            if (r->readLatest(out.handle))
+            {
+                out.ring   = r;
+                out.header = r->sessionHeader();
+                return true;
+            }
+            // The seqlock refused the read: the newest slot is being rewritten,
+            // so an even newer frame is on its way. Try again while time is left.
+            if (monotonicNs() >= deadline)
+            {
+                return false;
+            }
+            continue;
+        }
+        if (monotonicNs() >= deadline)
+        {
+            return false;
+        }
+        // Woken early: the ring stopped. ring() takes m_mtx, which a restart
+        // (changeGeometry) holds from its stop to its start, so this returns
+        // the ring of the new session if the stop was part of a restart.
+        std::shared_ptr<RingBuffer> next = ring();
+        if (!next || next == r)
+        {
+            return false;   // a plain stop() or close()
+        }
+        r        = next;
+        afterSeq = -1;      // every frame of the new session is newer
+    }
 }
 
 bool CameraBase::readSlot(uint32_t slot, Image& out)

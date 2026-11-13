@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 2.1.2). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 2.2.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -189,7 +189,9 @@ sensor is read out.
 
 | Method | Parameters | Returns | Description |
 |---|---|---|---|
-| `get_last_image()` | – | `ImgData \| None` | The most recently recorded image; `None` if no image has been recorded yet. |
+| `get_last_image()` | – | `ImgData \| None` | The most recently recorded image; `None` if no image has been recorded yet. Returns at once (polling). |
+| `wait_for_image(timeout_s, newer_than=None)` | `float` ≥ 0; `ImgData \| None` | `ImgData \| None` | *Addition.* Waits (without the GIL) for an image newer than `newer_than` (`None`: the next one) and returns the newest. `None` after `timeout_s`, or at once when no new image can come. Details: [§7.10](#710-waiting-for-new-images-and-callbacks). |
+| `set_image_callback(callback, max_rate_hz=None)` | callable `(ImgData) -> Any` or `None`; `float > 0` or `None` | `None` | *Addition.* Calls `callback(img)` for every new image, on a thread of its own; `None` removes it. One callback per camera. Details: [§7.10](#710-waiting-for-new-images-and-callbacks). |
 | `get_image(index)` | `int`, `0 ≤ index < buffer_size` | `ImgData` | The image in buffer slot `index`. `TypeError` for a non-int, `IndexError` if out of range, `LookupError` if the slot holds no completely recorded image. |
 | `get_image_info()` | – | `ImgMetaData \| None` | Metadata of the current or last recording **session** (the `UC2_SessionHeader`); `None` before the first `start()`. |
 | `start()` | – | `None` | Start acquisition: allocates a new buffer for the current geometry and opens a new session (a new `.uc2rb` file if storing). Does nothing if already recording. Raises `RuntimeError` on failure, plus `MemoryError`/`OSError` from the resource checks. |
@@ -317,6 +319,9 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
 - **GIL release.** `start`, `stop`, `close` and ROI/binning changes release the GIL while they
   wait.
 - **Acquisition.** The image copy runs on a C++ thread without the GIL.
+- **Waiting.** `wait_for_image()` waits without the GIL. C++ threads never call Python: the
+  image callback runs on a Python daemon thread of its own (`uc2_cam_py-image-callback`), which
+  holds the GIL only while the callback runs ([§7.10](#710-waiting-for-new-images-and-callbacks)).
 - **Debug window.** With `debug_window=True` a Python daemon thread owns the window (Xlib is not
   thread-safe here). It waits without the GIL until a new image is complete in the ring buffer
   and draws it at once — at most 60 times per second; with a faster camera it shows the newest
@@ -361,6 +366,96 @@ With `separate_process=True` (the default) `create_camera` starts the program `u
 - **SDK.** The camera process uses the same SDK copy (`uc2_cam_py/_mvs`) and inherits the
   environment `_sdk_env` set up. Enumeration (`list_cameras`, `list_devices`) still runs in
   this process.
+
+### 7.10 Waiting for new images and callbacks
+
+There are three ways to get the newest image. All return the same zero-copy `ImgData` (§7.4),
+and all work the same with `separate_process=True` and `False`.
+
+| Way | Call | Good for |
+|---|---|---|
+| Polling | `get_last_image()` | a program that is busy anyway and only now and then wants the current image; returns at once |
+| Waiting | `wait_for_image(timeout_s, newer_than)` | a loop that processes image after image |
+| Callback | `set_image_callback(callback)` | a program that is mostly idle and wants to be told |
+
+A complete example with the simulated camera: [`Examples/newest_image.py`](../Examples/newest_image.py).
+
+**Which image is newer.** An image is newer than `newer_than` if it is a later image of the same
+session, or **any** image of a later session. `sequence` starts at 0 in every session (each
+`start()` and each restart for `roi`/`binning`), so it alone cannot tell; the camera knows which
+session an `ImgData` came from. `newer_than` must be an image read from this camera
+(`get_last_image()`, `get_image()`, `wait_for_image()`, the callback); a constructed `ImgData`
+raises `ValueError`.
+
+**`wait_for_image(timeout_s, newer_than=None)`**
+- **Returns** the *newest* image that is newer than `newer_than` - at once if there already is
+  one. `newer_than=None` waits for the next image completed after the call.
+- **Restart during the wait** (`roi`, `binning`, or `start()` from another thread): the wait goes
+  on in the new session and returns its newest image (usually its first). Its shape may differ
+  from the previous one.
+- **`None` after `timeout_s`**, or **at once** when no new image can come:
+  - the camera is stopped or has never been started,
+  - it is stopped or closed during the wait,
+  - its camera process is lost during the wait (§7.9).
+
+  The wait never runs into its timeout because of one of these events.
+- **Errors.** `RuntimeError` if the camera is already closed or lost when called; `TypeError`
+  if `timeout_s` is not a number or `newer_than` not an `ImgData`; `ValueError` if `timeout_s`
+  is negative, not finite or above `uc2_cam_py.camera.MAX_WAIT_MS` (2³²−1 ms, about 49 days),
+  or `newer_than` is a constructed `ImgData`. `timeout_s=0` only checks.
+- **GIL.** Released while waiting; other Python threads run on.
+
+```python
+img = cam.get_last_image()
+while cam.is_recording:
+    new = cam.wait_for_image(timeout_s=1.0, newer_than=img)
+    if new is None:
+        continue                    # no image within 1 s, or the camera was stopped
+    img = new
+    process(img.data)
+    if not img.is_valid():          # overwritten while processing (§7.4)
+        ...
+```
+
+**`set_image_callback(callback, max_rate_hz=None)`**
+- **One callback per camera.** Setting one replaces the previous one (logged, INFO); `None`
+  removes it. `close()` removes it, too.
+- **Which images.** The callback gets the images completed after it was set. Set before
+  `start()`, it also gets the first image of the session.
+- **Thread.** The callback runs on a Python daemon thread of its own,
+  `uc2_cam_py-image-callback`, started with the first callback, ended by `close()`. Never on a
+  camera thread. Hand work over to your own thread from there: in Qt emit a signal (a queued
+  connection), in asyncio use `loop.call_soon_threadsafe(...)`.
+- **The newest image wins.** A callback slower than the camera gets the newest image each time,
+  never a backlog; skipped images show as gaps in `ImgData.sequence`. The camera never waits for
+  the callback.
+- **`max_rate_hz`** limits the calls per second (e.g. 30 for a live view of a fast camera);
+  `None`: as often as images come.
+- **Idle.** While the camera is stopped or no callback is set, the thread sleeps without a
+  timeout; `start()`, `set_image_callback()` and `close()` wake it. While the camera runs but
+  delivers no image, it wakes at most once per second. Stops, starts and restarts do not remove
+  the callback.
+- **Guarantee.** When `set_image_callback()` or `close()` returns, no further call of the old
+  callback begins. A call that is running is waited for, unless `set_image_callback()` or
+  `close()` is called from the callback itself - that is allowed and does not deadlock.
+- **Exceptions** in the callback do not stop the calls. The first one is logged as ERROR with
+  its traceback; further ones are counted and reported in one ERROR when the callback is
+  replaced or removed, or the camera is closed.
+- **Errors.** `TypeError` if `callback` is not callable or `max_rate_hz` not a number;
+  `ValueError` if `max_rate_hz` is not positive and finite; `RuntimeError` when setting a
+  callback on a closed camera or one whose camera process has ended (removing is allowed).
+- **Zero-copy.** As everywhere (§7.4): process, then check `img.is_valid()`, or take
+  `img.data.copy()`.
+
+```python
+def on_image(img: ImgData) -> None:     # on the callback thread
+    window.new_image.emit(img.data.copy())   # Qt: queued to the GUI thread
+
+cam.set_image_callback(on_image, max_rate_hz=30)
+cam.start()
+...
+cam.set_image_callback(None)
+```
 
 ## 8. Vendors
 
@@ -511,6 +606,7 @@ camera first).
 - `can_set_roi`, `model`, `pixel_format`, `image_size`, `recording_file`,
 - `vendor_options`, `list_devices`, `list_cameras` / `CameraInfo`, `debug_window`,
 - `separate_process` and `process_id` (one process per camera),
+- `wait_for_image()` and `set_image_callback()` (new images without polling, §7.10),
 - `store_image_data` as a setting, switchable while recording,
 - the settings JSON in the session comment.
 
@@ -523,6 +619,9 @@ camera first).
   have no camera reference; with several cameras they go to the most recently created camera's
   logger. (In camera processes each camera's messages reach its own logger.)
 - **CPU affinity.** The camera processes are not bound to cores yet; the kernel distributes them.
+- **A camera that stops delivering.** A device that delivers no more images without `stop()`
+  (e.g. a pulled cable) is not detected: `wait_for_image()` runs into its timeout, the image
+  callback is simply not called. Only a lost camera *process* ends a wait at once (§7.9).
 - **Pixel pitch.** The HikRobot model table is empty, so `pixel_pitch_um` is `None` until
   entries are added.
 - **Untested on hardware.** No HikRobot camera was available during development. Verify these

@@ -90,6 +90,13 @@ enum class FullPolicy : uint8_t
                     ///< then fall back to overwriting after Config::waitTimeoutMs
 };
 
+/// When RingBuffer::waitForFrame() gives up before its timeout.
+enum class WaitScope : uint8_t
+{
+    Ring    = 0,  ///< only at the timeout or after abortWaits(); a ring may be written without recording
+    Session = 1   ///< also at once while recording is off: once stopRecording() ran, no frame can come
+};
+
 /// Per-frame status bits, stored in UC2_SlotRecord::flags.
 enum FrameFlag : uint32_t
 {
@@ -584,9 +591,18 @@ public:
     /// @param afterSequence sequence of the newest frame the caller has seen,
     ///                      or -1 to wait for any frame.
     /// @param timeoutMs     upper bound for the wait; 0 only checks.
-    /// @return true if such a frame exists; false after the timeout, or at once
-    ///         if the buffer is not configured.
-    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs);
+    /// @param scope         WaitScope::Session also gives up at once when no
+    ///                      frame can come any more (recording off, also when
+    ///                      the producer in another process stops).
+    /// @return true if such a frame exists; false after the timeout, at once if
+    ///         the buffer is not configured or abortWaits() was called, and in
+    ///         WaitScope::Session at once while recording is off.
+    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs, WaitScope scope = WaitScope::Ring);
+
+    /// Wake every waitForFrame() of this RingBuffer object and make it, and
+    /// every later one, return false at once. For an attached ring whose
+    /// producer process died: its recording flag stays on for ever.
+    void abortWaits();
 
     /// Read whatever frame currently occupies ring slot @p slot.
     /// @param slot     ring slot index in [0, slotCount).
@@ -720,6 +736,7 @@ private:
 
     bool                     m_configured = false;
     std::atomic<bool>        m_writeBusy;              ///< catches a second concurrent producer
+    std::atomic<bool>        m_waitsAborted{false};    ///< set by abortWaits(), in this process only
 
     // Outside the region on purpose: a wake-up aid for the Wait-mode producer
     // only, never the source of correctness. Readers waiting for frames use the

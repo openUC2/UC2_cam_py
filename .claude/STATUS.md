@@ -1,12 +1,16 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-11-13 · Branch `ARM_Fence` · HEAD `ce2cf48` (Version 2.1.2, noch ohne Tag),
-Tag `v2.1.1` auf `280ad7b`; nichts davon ist in `main` gemergt. Nicht committet ist der
-Abgleich von `Docs/RingBuff_REF.md` (oberster Eintrag).
-**Nächster Schritt:** Der Nutzer committet den Abgleich. Dann setze ich den Tag `v2.1.2`
-(`git tag -a v2.1.2 -m "uc2_cam_py 2.1.2" <commit>`), und der Nutzer pusht. Auf dem Pi
-wiederholt der Nutzer Checkliste §8 (TSan mit `kernel8.img`).
-**Letzte Arbeitsschritte:** `RingBuff_REF.md` an Header und Code angeglichen. Davor Version 2.1.2:
+**Stand:** 2026-11-13 · Branch `main` · HEAD `0708505` (Merge von PR #2 `ARM_Fence`, echter
+Merge-Commit). Tags `v2.1.1` (`280ad7b`) und `v2.1.2` (`367fe95`) liegen beide auf `main` und
+sind gepusht. `ARM_Fence` ist lokal und remote gelöscht.
+**Nächster Schritt:** Version 2.2.0 (neue Bilder ohne Polling, oberster Eintrag unten) ist
+umgesetzt, aber nicht committet; Commit und Tag `v2.2.0` entscheidet der Nutzer. Offen bleiben
+§11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die acht Befunde der Bewertung
+[FableEval.md](FableEval.md).
+**Letzte Arbeitsschritte:** Version 2.2.0: `wait_for_image()` und `set_image_callback()`, dazu
+die zwei Wartefehler behoben. Davor die Bewertung des Pakets in `FableEval.md` (nur Dokument). Davor der
+ARM-Lauf auf dem Pi 5, abgeschlossen mit 2.1.2 (§11.2 Punkt 6). Davor
+`RingBuff_REF.md` an Header und Code angeglichen. Davor Version 2.1.2:
 Im Wait-Modus blieb der Producer stehen, wenn sich ein Consumer anmeldete. Davor der Pi-5-Lauf der ARM-Checkliste (Einträge
 2026-11-12) und die Seqlock-Fences für ARM + `Docs/ARM_Checkliste.md`, Version 2.1.1. Davor: 2.1.0 (OME-TIFF-Export), 2.0.0 (`ImgData.data` immer 3D), 1.0.1
 (Build ohne bzw. mit unbrauchbarem MVS-SDK), Versionierung (1.0.0), Flush-Fehler, Rauschen im
@@ -18,9 +22,132 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### `Docs/RingBuff_REF.md` an Header und Code angeglichen — 2026-11-13
+### Neue Bilder ohne Polling: `wait_for_image()` und `set_image_callback()` — Version 2.2.0 — 2026-11-13
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-13.
+- **Anlass:** Bisher kam ein einbindendes Programm an neue Bilder nur per Polling mit
+  `get_last_image()`. Jetzt kann es auch warten oder sich rufen lassen; Polling bleibt
+  unverändert. Ein Callback je Kamera (mit dem Nutzer vereinbart). Vorgabe: Ein Warten bis zum
+  Timeout ist bei Stopp oder Neustart nicht akzeptabel.
+- **Zwei Fehler im vorhandenen Warten, zuerst behoben:**
+  1. Stopp oder Neustart weckte niemanden; Wartende schliefen bis zum Timeout. Vor dem ersten
+     `start()` schlief `CameraBase::waitForFrame` immer den vollen Timeout.
+  2. `sequence` beginnt je Sitzung bei 0: Ein `afterSequence` der alten Sitzung meldete erst
+     wieder ein Bild, wenn die neue diese Zahl überholt hatte.
+- **C++ Ring Buffer** (`UC2_RingBuff.h/.cpp`):
+  - `stopRecording()` weckt die Wartenden, über `frameSignal`, also in allen Prozessen. Gebraucht
+    wird nur das vorhandene `recording`-Flag in `UC2_Control`; Layout und Größe bleiben.
+  - `waitForFrame(after, ms, WaitScope)`: `Ring` (Standard) wie bisher, `Session` gibt sofort
+    auf, solange `recording == 0`. `Ring` bleibt Standard, weil ein Ring auch ohne Aufnahme
+    beschrieben werden darf (Tests, `RingBuffExample`).
+  - `abortWaits()`: prozesslokales, bleibendes Flag plus Wecken. Für einen angehängten Ring,
+    dessen Worker gestorben ist; dort bleibt `recording` auf 1.
+  - Hilfsfunktion `signalFrameWaiters()` im anonymen Namespace, genutzt von `commitWrite()`,
+    `stopRecording()` und `abortWaits()`.
+- **C++ Kameras:** `waitForImage(out, timeoutMs, after)` ersetzt `waitForFrame(int64_t, uint32_t)`
+  in `CameraBase` und `RemoteCamera`.
+  - Neuer ist ein späterer Frame aus `after`s Ring oder jeder Frame eines anderen Rings. Ein
+    leeres `Image` (ohne Ring) ist älter als jedes Bild; ohne `after` gilt das nächste Bild.
+  - Wird früh geweckt, holt der Wartende den Ring erneut. Ist es ein neuer, wartet er dort mit
+    −1 weiter (Neustart wird verfolgt); sonst `false`.
+  - `CameraBase`: `ring()` nimmt `m_mtx`, das `changeGeometry()` von Stopp bis Start hält.
+  - `RemoteCamera`: Zähler `m_sessionCalls` (start, stop, setRoi, setBinning, resetRoi; vor dem
+    Senden erhöht) und `settledRing()`, das auf `m_cv` wartet, bis kein solcher Aufruf mehr
+    läuft. Das geht, weil der Worker den neuen Ring vor der Antwort ankündigt
+    (`Worker::reply()`). `markLost()` und `close()` rufen `abortWaits()`.
+- **Binding:** `wait_for_frame` entfällt; neu `wait_for_image(after, timeout_ms, any_frame=False)`
+  ohne GIL, liefert `ImageHandle | None`.
+- **Python:**
+  - `Camera.wait_for_image(timeout_s, newer_than=None)` und
+    `Camera.set_image_callback(callback, max_rate_hz=None)` in `camera.py`; der gemeinsame
+    Wartebaustein `_wait_newer(backend, …)` hält das Backend, nicht die Kamera.
+  - Neu `_callback.py` (`ImageDispatcher`): ein Daemon-Thread je Kamera. `RLock` während des
+    Aufrufs (Garantie „danach kein Aufruf mehr“, Aufruf aus dem Callback erlaubt), `Condition`
+    für den Leerlauf ohne Timeout.
+  - Bezugspunkt eines Callbacks ist das neueste Bild beim Setzen. Gab es keins, zählt jedes Bild
+    (`any_frame`). Das wurde beim Test entdeckt: Vorher verlor ein vor `start()` gesetzter
+    Callback das erste Bild der Sitzung.
+  - Fehler im Thread selbst werden geloggt; Ausnahmen im Callback: die erste mit Traceback,
+    weitere gezählt.
+  - `DebugWindow` wartet über `_wait_newer`. Kommt `None` früh (gestoppt), schläft es den Rest
+    der 50 ms, sonst liefe die Schleife jetzt im Kreis.
+- **Beispiel:** `Examples/newest_image.py` (Polling, Warten, Callback; am Ende `stop()` →
+  sofort `None`). README: Baum, Absatz, Aufruf.
+- **Doku:**
+  - Schnittstellen-Doku: §5 zwei Zeilen, **neu §7.10** mit der ganzen Semantik, §7.7, §10, §11
+    (ein Gerät, das ohne `stop()` nichts mehr liefert, wird nicht erkannt: Timeout).
+  - `RingBuff_REF.md`: §1, neuer Abschnitt `WaitScope` in §3, §4 `frameSignal`, §7.6, §7.8.
+    Alle Zeilenverweise neu gesetzt, per Diff alt → neu; alle 29 Header- und 7 cpp-Verweise
+    treffen, die 19 internen Links lösen auf.
+  - `VERSION` 2.2.0, CHANGELOG `[2.2.0]`.
+- **Tests:**
+  - Catch2 +13: `[ring]` +2, `[ring][mt]` +2, `[shm][mt]` +1 (Producer-Kind stoppt, lebt
+    weiter), `[camera][sim]` aus 1 werden 4, `[worker]` +5 (inkl. SIGKILL während des Wartens).
+  - pytest +73: neu `tests/test_wait_and_callback.py` mit 71, davon laufen die HikRobot-Varianten
+    nur mit Kamera; `test_api_surface.py` +2. Der Backend-Test in `test_display.py` ist
+    angepasst.
+- **Verifiziert (x86, GCC 16.2.1, ohne angeschlossene Kamera):**
+  - `uv run all_tests`: C++ 152/152, Python 277 passed / 25 skipped (Hardware); das Paket meldet
+    `2.2.0`.
+  - `ctest --preset asan` und `--preset tsan`: je 152/152, ohne Warnungen. Ohne SDK
+    (`build/core-nomvs`): 133/133.
+  - Die 14 Wartetests unter TSan je 100-mal (`--repeat until-fail:100`): 1400/1400.
+  - `tests/test_wait_and_callback.py` 5-mal hintereinander: je 68 passed.
+  - `uvx ruff check python/ tests/ tools/ Examples/`: sauber. `Examples/newest_image.py` von Hand:
+    drei Abschnitte, am Ende `None` nach 0,000 s.
+  - **Nicht geprüft:** HikRobot-Kamera (keine angeschlossen; die `hardware`-Varianten von
+    `test_wait_and_callback.py` laufen mit `-m hardware`), ARM/Pi 5, Debug-Fenster von Hand
+    (`uv run main`).
+- **Nebenbefund:** Im ersten `ctest`-Lauf brauchte `ImageWindow construction is safe and
+  self-consistent` 298 s; in allen späteren Läufen 0,01 s. Vermutlich hing die Verbindung zum
+  X-Server kurz; mit dieser Änderung hat der Test nichts zu tun.
+- **Offen (Nutzer):** Commit, Tag `v2.2.0`; `pytest -m hardware` mit Kamera; optional der
+  Pi-Lauf (Checkliste §8, TSan mit `kernel8.img`).
+
+### Bewertung des Pakets: `.claude/FableEval.md` — 2026-11-13
+
+**Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/joyful-noodling-clock.md`, freigegeben 2026-11-13. Auftrag des Nutzers:
+  Architektur, Dokumentation und Implementierung an den Projektzielen messen (Verteilung auf die
+  Kerne, keine Segfaults, keine Blockade durch den GIL, mehrere Kameras, keine Sorge um IPC und
+  Thread-Sicherheit im einbindenden Programm). Nur ein neues Dokument, kein Code.
+- **Ergebnis:** [.claude/FableEval.md](FableEval.md), deutsch, 2025 Wörter, Abstract 186 Wörter.
+  Eine PDF-Probe (A4, 10,5 pt, 2 cm Rand) ergab 5 Seiten.
+- **Die acht Befunde dort (§4), nichts davon ist behoben:**
+  1. hoch: Eine überschrittene Antwortfrist (5 s / 30 s) beendet auch einen gesunden Kamera-Prozess,
+     weil die Frist beim Senden startet und der Prozess Befehle nacheinander abarbeitet
+     (`RemoteCamera.cpp:419`, `CamWorker.cpp:585`).
+  2. mittel: Ohne `close()` hält der Destruktor den GIL bis zu 30 s (`hik_py.cpp:599`).
+  3. mittel: Zerrissene Datensätze bleiben unmarkiert in der `.uc2rb`-Datei; nach Schreibfehlern
+     wird weitergeschrieben; das Fehlerflag ist in Python nicht abfragbar
+     (`UC2_RingBuff.cpp:1987`, `camera.py:666`).
+  4. mittel: Kopierfreie Bilder verlangen `is_valid()` bzw. `copy()` vom Anwender.
+  5. mittel: Das MVS-SDK wird auch im Hauptprozess geladen (Import, Kamerasuche).
+  6. mittel: Kernverteilung nicht steuerbar, Messung auf dem Pi 5 nicht dokumentiert.
+  7. niedrig: `fork()` in der Anwendung vererbt die Socket-Enden.
+  8. niedrig: `separate_process=False` (GIL bei parallelem `stop()`, `HikCamera` ohne Sperre) und
+     das X11-Fenster (§11.3 P2).
+- **Veraltete Doku-Stellen, in §5 dort genannt:** `README.md:24` (aarch64 „not yet run“),
+  `Tooling.md` §6, dieses Dokument §4 („ohne SDK nicht konfigurierbar“) und §5, `Todos.md`
+  (`FrameGrabber`), Schnittstellen-Doku §11 („untested on hardware“).
+- **Eigene Läufe (x86, GCC 16.2.1, mit angeschlossener MV-CA023-10UM):**
+  - `uv run all_tests`: C++ 139/139, Python 227 passed / 2 skipped (die Hardware-Tests liefen mit).
+  - `ctest --preset asan` und `--preset tsan`: je 139/139.
+  - M1: Kamera-Prozess 7 s per SIGSTOP angehalten. Nur `stop()`: Rückkehr nach 7,0 s. Dazu ein
+    Getter aus einem zweiten Thread: SIGKILL nach 5,5 s, Kamera verloren, der Getter liefert `None`.
+  - M2: Prozess angehalten. `close()`: längste Lücke eines Python-Taktgebers 11 ms.
+    `del cam` ohne `close()`: 30 010 ms.
+  - M3: vier simulierte Kameras (freilaufend, je 100 % eines Kerns, 28–33 fps) und die HikRobot
+    (41 fps, 5 %); mit belegtem GIL unverändert 28–32 und 41 fps.
+- **Messskripte:** lagen im Scratchpad der Sitzung und sind nicht Teil des Projekts. Das Vorgehen
+  steht in `FableEval.md` §6.
+
+### `Docs/RingBuff_REF.md` an Header und Code angeglichen — 2026-11-13
+
+**Implementiert:** ja · **Committet:** ja (`367fe95`, Tag `v2.1.2`; über PR #2 in `main`)
 
 - **Plan:** `~/.claude/plans/functional-painting-pumpkin.md`, freigegeben 2026-11-13. Anlass war
   der Nebenbefund aus 2.1.2 (Eintrag darunter). Nur Doku, kein Code.
@@ -56,7 +183,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Wait-Modus: Producer bleibt nicht mehr stehen, wenn sich ein Consumer anmeldet — Version 2.1.2 — 2026-11-13
 
-**Implementiert:** ja · **Committet:** ja (`ce2cf48` auf Branch `ARM_Fence`, Tag `v2.1.2` steht aus)
+**Implementiert:** ja · **Committet:** ja (`ce2cf48`; Tag `v2.1.2` auf dem Folgecommit `367fe95`; über PR #2 in `main`)
 
 - **Plan:** [.claude/currentPlan.md](currentPlan.md), freigegeben 2026-11-12. Dort stehen auch
   die Fehlerbeschreibung und die Messung.
@@ -107,8 +234,9 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 - **Nebenbefund:** Die Verweise von `RingBuff_REF.md` auf den **Header** waren schon vor dieser
   Änderung veraltet. Behoben im Eintrag darüber.
 - **Offen (Nutzer):**
-  - Tag `v2.1.2` setzen (ich, nach Freigabe); dann pushen.
-  - Auf dem Pi Checkliste §8 wiederholen (TSan mit `kernel8.img`).
+  - ~~Tag `v2.1.2` setzen und pushen~~ — erledigt 2026-11-13 (Nutzer, auf `367fe95`).
+  - ~~Auf dem Pi Checkliste §8 wiederholen (TSan mit `kernel8.img`)~~ — laut Nutzer erledigt
+    2026-11-13 (§11.2 Punkt 6).
 
 ### ARM-Checkliste: Abschnitt „Falls hier der RPI einfriert“ — 2026-11-12
 
@@ -152,10 +280,11 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
   - Der Fall „beschädigter Baum“ unter „Sonst“.
   - §1 und die Ergebnistabelle angepasst.
   - `Tooling.md` §7: Die Pi-Tabelle trennt jetzt ASan und TSan.
-- **Offen (Nutzer):**
-  - TSan mit `kernel8.img` laufen lassen.
-  - Mit dem offiziellen 27-W-Netzteil prüfen, ob `max_current` 5000 zeigt, und §6 mit Last
-    sowie §9 wiederholen.
+- **Offen (Nutzer):** Beide Punkte hat der Nutzer am 2026-11-13 mit dem ARM-Lauf geschlossen
+  (§11.2 Punkt 6).
+  - ~~TSan mit `kernel8.img` laufen lassen~~ — laut Nutzer erledigt, mit 2.1.2.
+  - ~~Mit dem offiziellen 27-W-Netzteil prüfen, ob `max_current` 5000 zeigt, und §6 mit Last
+    sowie §9 wiederholen~~ — ob das geschehen ist, ist hier nicht festgehalten.
 
 ### Seqlock-Fences für ARM + Checkliste für den ersten Pi-Lauf — Version 2.1.1 — 2026-10-30
 
@@ -204,8 +333,10 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 - **Nebenbei:** `build/profile` stammte noch aus `UC2_HIKpy` (der Cache zeigte auf den alten
   Pfad). Der Baum ist gelöscht und neu gebaut.
 - **Offen (Nutzer):**
-  - Die Checkliste auf dem Pi abarbeiten und die Ergebnistabelle zurückmelden (§11.2 Punkt 6).
-  - Tag `v2.1.1` pushen (`git push origin v2.1.1`); Branch `ARM_Fence` nach `main` mergen.
+  - ~~Die Checkliste auf dem Pi abarbeiten und die Ergebnistabelle zurückmelden~~ — abgearbeitet
+    bis auf §10 (zweiter Export) und §11; geschlossen 2026-11-13 (§11.2 Punkt 6).
+  - ~~Tag `v2.1.1` pushen; Branch `ARM_Fence` nach `main` mergen~~ — erledigt 2026-11-13
+    (PR #2, Merge-Commit `0708505`).
 
 ### OME-TIFF-Export `uc2_cam_py.exporter` — Version 2.1.0 — 2026-10-29
 
@@ -893,7 +1024,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 229 Tests, ~20 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 302 Tests, ~40 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -908,15 +1039,15 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 139 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 152 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 135 Tests (ohne [hardware])
+ctest --test-dir build/core       # 148 Tests (ohne [hardware])
 
-# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 120 Tests. HIK_MVS=AUTO|ON|OFF.
+# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 133 Tests. HIK_MVS=AUTO|ON|OFF.
 cmake -S core -B build/core-nomvs -G Ninja -DHIK_BUILD_TESTS=ON -DHIK_MVS=OFF
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
@@ -1089,10 +1220,20 @@ if (rb.beginWrite(w)) {                       // stempelt tsBefore, setzt kFlagW
 RingBuffer::ReadHandle r;
 rb.readLatest(r);                             // letztes geschriebenes Bild
 rb.waitForFrame(last, 50);                    // blockiert bis Sequenz > last oder 50 ms
+rb.waitForFrame(last, 50, WaitScope::Session); // ... oder sofort, sobald die Aufnahme aus ist
+rb.abortWaits();                              // alle Wartenden dieses Objekts: sofort false
 rb.readSlot(7, r);                            // Bild nach Index im Puffer
 rb.readSequence(1234, r);                     // Bild nach globaler Frame-Nummer
 r.stillValid();                               // wurde der Slot unter uns recycelt?
 r.release(/*markRead=*/true, /*markSaved=*/false);
+```
+
+Auf Kamera-Ebene (`CameraBase`, `RemoteCamera`, seit 2.2.0):
+
+```cpp
+CameraBase::Image img, next;
+cam.waitForImage(img, 1000);           // das nächste Bild nach dem Aufruf
+cam.waitForImage(next, 1000, &img);    // neuer als img; über Neustarts hinweg; false sofort bei Stopp
 ```
 
 **Handles sind RAII:** ein nicht committetes `WriteHandle` bricht im Destruktor ab
@@ -1189,9 +1330,19 @@ registrieren.
 4. ~~**Multi-Prozess**~~ — **erledigt 2026-10-27** (Eintrag oben): memfd statt `shm_open`, also
    keine Namen und nichts aufzuräumen nach einem Absturz; futex statt `PTHREAD_PROCESS_SHARED`.
 5. ~~**README**~~ — **erledigt 2026-10-18**.
-6. **ARM-Lauf** — noch nie auf dem Pi 5 gebaut. Die Seqlock-Fences dafür sind seit 2.1.1
-   drin (oberster Eintrag). Der Nutzer arbeitet [Docs/ARM_Checkliste.md](../Docs/ARM_Checkliste.md)
-   auf dem Pi ab und meldet die Ergebnistabelle zurück; erst dann ist dieser Punkt erledigt.
+6. ~~**ARM-Lauf**~~ — **geschlossen 2026-11-13 durch den Nutzer**. Er hat
+   [Docs/ARM_Checkliste.md](../Docs/ARM_Checkliste.md) auf dem Pi 5 abgearbeitet, zuletzt §8 mit
+   TSan und `kernel8.img` unter 2.1.2.
+   - **Nicht ausgeführt:**
+     - §10, zweiter Befehl: der Export der Aufnahmen aus §9 (`export_recordings.py /mnt/ssd/uc2`).
+       `--demo` lief.
+     - §11: Systemdaten und Ergebnistabelle. Die Tabelle in der Checkliste bleibt deshalb leer.
+   - **Festgehalten** (Einträge 2026-11-12):
+     - §6 und die Gegenprobe auf `v2.1.0`: keine Umordnung.
+     - ASan grün mit dem Standard-Kernel.
+     - Das Netzteil handelte nur 900 mA aus (`max_current`).
+     - Die Einzelergebnisse des TSan-Laufs mit 2.1.2 (Summenzeile, Wiederholungen von #91)
+       hat der Nutzer nicht übermittelt.
 7. ~~**Wackelnder Test unter TSan**~~ — **erledigt 2026-11-13 mit Version 2.1.2** (oberster
    Eintrag): #91 scheitert jetzt in 0 von 200 Läufen, unter TSan wie im Debug-Build.
    Vorgeschichte: „stopStreaming finishes although the producer keeps writing“

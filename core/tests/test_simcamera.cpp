@@ -53,6 +53,17 @@ bool waitFrames(CameraBase& cam, uint64_t n, int timeoutMs = 3000)
     return false;
 }
 
+/// Milliseconds since construction or the last reset().
+struct Stopwatch
+{
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    void reset() { t0 = std::chrono::steady_clock::now(); }
+    int64_t ms() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    }
+};
+
 /// Unique, empty directory below the system temp dir; removed on destruction.
 struct TempDir
 {
@@ -199,20 +210,106 @@ TEST_CASE("the simulated image has an offset with shot noise", "[camera][sim]")
     CHECK(var == Catch::Approx(mean).epsilon(0.05));      // Poisson: variance = mean
 }
 
-TEST_CASE("waitForFrame signals new frames of a running SimCamera", "[camera][sim]")
+TEST_CASE("waitForImage returns the next or a newer image, and at once when none can come", "[camera][sim]")
 {
     auto cam = makeSim();
-    CHECK_FALSE(cam->waitForFrame(-1, 10));   // no ring before the first start
+    Stopwatch sw;
+    CameraBase::Image none;
+    CHECK_FALSE(cam->waitForImage(none, 10000));   // never started: at once, not after 10 s
+    CHECK(sw.ms() < 1000);
 
     REQUIRE(cam->start());
-    REQUIRE(cam->waitForFrame(-1, 2000));
-    CameraBase::Image img;
-    REQUIRE(cam->readLatest(img));
-    CHECK(cam->waitForFrame(static_cast<int64_t>(img.handle.sequence()), 2000));   // 100 fps: the next one
-    cam->stop();
+    REQUIRE(waitFrames(*cam, 1));
+    const uint64_t before = cam->ring()->framesWritten();
+    CameraBase::Image next;
+    REQUIRE(cam->waitForImage(next, 2000));           // the next frame after the call
+    CHECK(next.handle.sequence() >= before);
+    CHECK(next.ring == cam->ring());
+    CHECK(next.header.width == 400);
+    CameraBase::Image newer;
+    REQUIRE(cam->waitForImage(newer, 2000, &next));   // 100 fps: the one after it
+    CHECK(newer.handle.sequence() > next.handle.sequence());
+    CHECK_FALSE(cam->waitForImage(newer, 2000, &next));   // the output must be empty
 
-    const int64_t last = static_cast<int64_t>(cam->ring()->framesWritten()) - 1;
-    CHECK_FALSE(cam->waitForFrame(last, 30));   // stopped: nothing newer arrives
+    cam->stop();
+    CameraBase::Image already;
+    CHECK(cam->waitForImage(already, 0, &next));      // a newer one is there: also when stopped
+    CameraBase::Image after;
+    sw.reset();
+    CHECK_FALSE(cam->waitForImage(after, 10000, &already));   // stopped: at once
+    CHECK_FALSE(cam->waitForImage(after, 10000));
+    CHECK(sw.ms() < 1000);
+
+    cam->close();
+    sw.reset();
+    CHECK_FALSE(cam->waitForImage(after, 10000));     // closed: at once
+    CHECK(sw.ms() < 1000);
+}
+
+TEST_CASE("waitForImage returns at once when the camera is stopped during the wait", "[camera][sim][mt]")
+{
+    auto cam = makeSim();
+    REQUIRE(cam->setFrameRate(0.2));   // the next frame would come after 5 s
+    REQUIRE(cam->start());
+    REQUIRE(waitFrames(*cam, 1));
+
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        cam->stop();
+    });
+    Stopwatch sw;
+    CameraBase::Image img;
+    const bool got = cam->waitForImage(img, 10000);
+    const int64_t ms = sw.ms();
+    stopper.join();
+    CHECK_FALSE(got);
+    CHECK(ms < 2000);
+}
+
+TEST_CASE("waitForImage follows a restart into the new session", "[camera][sim][mt]")
+{
+    auto cam = makeSim();
+    REQUIRE(cam->setFrameRate(0.2));   // only the restart can bring a frame within 5 s
+    REQUIRE(cam->start());
+    REQUIRE(waitFrames(*cam, 1));
+    CameraBase::Image first;
+    REQUIRE(cam->readLatest(first));
+
+    std::thread changer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(cam->setRoi(hik::SensorRoi{ 0, 0, 200, 100 }));
+    });
+    Stopwatch sw;
+    CameraBase::Image img;
+    const bool got = cam->waitForImage(img, 10000, &first);
+    const int64_t ms = sw.ms();
+    changer.join();
+    REQUIRE(got);
+    CHECK(ms < 2000);
+    CHECK(img.ring != first.ring);   // the first frame of the new session
+    CHECK(img.handle.sequence() == 0);
+    CHECK(img.header.width == 200);
+    CHECK(img.header.height == 100);
+}
+
+TEST_CASE("an image of an older session counts as older than every frame of the current one", "[camera][sim]")
+{
+    auto cam = makeSim();
+    REQUIRE(cam->start());
+    REQUIRE(waitFrames(*cam, 30));
+    CameraBase::Image old;
+    REQUIRE(cam->readLatest(old));
+    REQUIRE(old.handle.sequence() >= 29);
+
+    REQUIRE(cam->setFrameRate(0.5));   // the new session would need a minute to pass `old`
+    REQUIRE(cam->setRoi(hik::SensorRoi{ 0, 0, 200, 100 }));
+    REQUIRE(cam->lastChangeRestarted());
+    Stopwatch sw;
+    CameraBase::Image img;
+    REQUIRE(cam->waitForImage(img, 10000, &old));
+    CHECK(sw.ms() < 2000);
+    CHECK(img.ring != old.ring);
+    CHECK(img.handle.sequence() < old.handle.sequence());   // smaller, and still newer
 }
 
 TEST_CASE("readSlot returns frames by slot and rejects bad indices", "[camera][sim]")

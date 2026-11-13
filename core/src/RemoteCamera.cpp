@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -239,9 +240,15 @@ void RemoteCamera::close()
     }
     ScopedLogSource tag(m_source);
     bool lost = false;
+    std::shared_ptr<RingBuffer> ring;
     {
         std::lock_guard<std::mutex> lk(m_mtx);
         lost = m_lost;
+        ring = m_ring;
+    }
+    if (ring)
+    {
+        ring->abortWaits();   // no new image is handed out once closing has begun
     }
     if (!lost)
     {
@@ -250,6 +257,7 @@ void RemoteCamera::close()
             std::lock_guard<std::mutex> lk(m_mtx);
             m_closing = true;   // its end-of-file is expected now
         }
+        m_cv.notify_all();      // waitForImage() waiting for a session call gives up
         Reply r;
         callLogged(req, r, kSlowMs);
     }
@@ -257,6 +265,7 @@ void RemoteCamera::close()
         std::lock_guard<std::mutex> lk(m_mtx);
         m_closing = true;
     }
+    m_cv.notify_all();
     shutdownProcess();
     m_running.store(false);
     m_closed = true;
@@ -357,6 +366,7 @@ bool RemoteCamera::isLost() const
 void RemoteCamera::markLost(const std::string& reason)
 {
     std::string who;
+    std::shared_ptr<RingBuffer> ring;
     {
         std::lock_guard<std::mutex> lk(m_mtx);
         if (m_lost)
@@ -364,12 +374,17 @@ void RemoteCamera::markLost(const std::string& reason)
             return;
         }
         m_lost = true;
+        ring   = m_ring;
         if (!m_serial.empty())
         {
             who = " (" + m_vendor + " " + m_serial + ")";
         }
     }
     m_running.store(false);
+    if (ring)
+    {
+        ring->abortWaits();   // its producer is gone: the recording flag stays on for ever
+    }
     m_cv.notify_all();
     ERR("Camera process " + std::to_string(m_pid) + who + ": " + reason + exitDescription()
         + " - the camera is no longer available; images already read stay valid");
@@ -383,6 +398,31 @@ Message RemoteCamera::newRequest(Op op)
 {
     std::lock_guard<std::mutex> lk(m_mtx);
     return Message(Kind::Request, op, m_nextId++);
+}
+
+template <typename F>
+auto RemoteCamera::sessionCall(F f) -> decltype(f())
+{
+    // Counted before the request goes out: the camera process stops the old
+    // session only after it got it, so a waiter woken by that stop always
+    // sees the call in flight.
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        ++m_sessionCalls;
+    }
+    struct Done
+    {
+        RemoteCamera* self;
+        ~Done()
+        {
+            {
+                std::lock_guard<std::mutex> lk(self->m_mtx);
+                --self->m_sessionCalls;
+            }
+            self->m_cv.notify_all();
+        }
+    } done{this};
+    return f();
 }
 
 bool RemoteCamera::call(Message& req, Reply& out, int timeoutMs)
@@ -656,17 +696,20 @@ bool RemoteCamera::setBinning(uint32_t factor)
 {
     Message req = newRequest(Op::SetBinning);
     req.putU32(factor);
-    return callFlag(req, kSlowMs);
+    return sessionCall([&] { return callFlag(req, kSlowMs); });
 }
 
 bool RemoteCamera::setRoi(const SensorRoi& roi)
 {
     Message req = newRequest(Op::SetRoi);
     req.putI64(roi.x).putI64(roi.y).putI64(roi.width).putI64(roi.height);
-    return callFlag(req, kSlowMs);
+    return sessionCall([&] { return callFlag(req, kSlowMs); });
 }
 
-bool RemoteCamera::resetRoi() { return callFlag(newRequest(Op::ResetRoi), kSlowMs); }
+bool RemoteCamera::resetRoi()
+{
+    return sessionCall([this] { return callFlag(newRequest(Op::ResetRoi), kSlowMs); });
+}
 
 void RemoteCamera::setBufferConfig(const CameraBase::BufferConfig& cfg)
 {
@@ -696,13 +739,16 @@ bool RemoteCamera::setStoragePath(const std::string& dirPath)
     return ok;
 }
 
-bool RemoteCamera::start() { return callFlag(newRequest(Op::Start), kSlowMs); }
+bool RemoteCamera::start()
+{
+    return sessionCall([this] { return callFlag(newRequest(Op::Start), kSlowMs); });
+}
 
 void RemoteCamera::stop()
 {
     Message req = newRequest(Op::Stop);
     Reply r;
-    callLogged(req, r, kSlowMs);
+    sessionCall([&] { callLogged(req, r, kSlowMs); });
 }
 
 std::string RemoteCamera::recordingFile()
@@ -779,17 +825,76 @@ bool RemoteCamera::readLatest(CameraBase::Image& out)
     return true;
 }
 
-bool RemoteCamera::waitForFrame(int64_t afterSequence, uint32_t timeoutMs)
+std::shared_ptr<RingBuffer> RemoteCamera::settledRing(std::chrono::steady_clock::time_point deadline)
 {
-    // As in CameraBase: the local shared_ptr keeps a replaced ring alive, and
-    // the caller then wakes at the latest after timeoutMs.
-    std::shared_ptr<RingBuffer> r = ring();
-    if (!r)
+    std::unique_lock<std::mutex> lk(m_mtx);
+    m_cv.wait_until(lk, deadline, [this] { return m_sessionCalls == 0 || m_lost || m_closing; });
+    if (m_sessionCalls != 0 || m_lost || m_closing)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+        return nullptr;
+    }
+    return m_ring;
+}
+
+bool RemoteCamera::waitForImage(CameraBase::Image& out, uint32_t timeoutMs, const CameraBase::Image* after)
+{
+    using Clock = std::chrono::steady_clock;
+    if (out.handle.held())
+    {
+        ERR("RemoteCamera::waitForImage: the output image already holds a frame");
         return false;
     }
-    return r->waitForFrame(afterSequence, timeoutMs);
+    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
+    // As in CameraBase, the local shared_ptr keeps a ring alive that a restart
+    // replaces meanwhile. A start() in flight brings the first ring with it.
+    std::shared_ptr<RingBuffer> r = ring();
+    if (!r && !(r = settledRing(deadline)))
+    {
+        return false;
+    }
+    int64_t afterSeq = -1;   // a frame of a later ring than after's is newer anyway
+    if (after == nullptr)
+    {
+        afterSeq = static_cast<int64_t>(r->framesWritten()) - 1;
+    }
+    else if (after->ring == r)
+    {
+        afterSeq = static_cast<int64_t>(after->handle.sequence());
+    }
+    for (;;)
+    {
+        const int64_t left = std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now()).count();
+        const uint32_t ms  = static_cast<uint32_t>(std::max<int64_t>(0, left));
+        if (r->waitForFrame(afterSeq, ms, WaitScope::Session))
+        {
+            if (r->readLatest(out.handle))
+            {
+                out.ring   = r;
+                out.header = r->sessionHeader();
+                return true;
+            }
+            if (Clock::now() >= deadline)   // seqlock refused: an even newer frame is coming
+            {
+                return false;
+            }
+            continue;
+        }
+        if (Clock::now() >= deadline)
+        {
+            return false;
+        }
+        // Woken early: the session ended (or the camera is lost or closing).
+        // The camera process stops the old session before it announces the
+        // new one, and announces it before it answers the call that made it
+        // (start, ROI, binning). Once no such call is in flight, m_ring is final.
+        std::shared_ptr<RingBuffer> next = settledRing(deadline);
+        if (!next || next == r)
+        {
+            return false;
+        }
+        r        = next;
+        afterSeq = -1;   // every frame of the new session is newer
+    }
 }
 
 bool RemoteCamera::readSlot(uint32_t slot, CameraBase::Image& out)

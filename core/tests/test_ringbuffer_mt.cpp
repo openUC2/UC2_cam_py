@@ -407,3 +407,63 @@ TEST_CASE("waitForFrame wakes as soon as another thread commits a frame", "[ring
     CHECK(woke.load());
     CHECK(waited < std::chrono::seconds(2));   // woken by the commit, not by the 5 s timeout
 }
+
+TEST_CASE("stopRecording wakes a WaitScope::Session waiter at once, a Ring waiter sleeps on", "[ring][mt]")
+{
+    using hik::WaitScope;
+    RingBuffer::Config cfg;
+    cfg.slotCount = 4;
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(16, 16));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+
+    std::atomic<int>  sessionMs(-1);
+    std::atomic<bool> sessionWoke(true);
+    std::atomic<bool> ringWoke(true);
+    std::atomic<int>  ringMs(-1);
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto since = [&t0] {
+        return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count());
+    };
+    std::thread session([&] {
+        sessionWoke.store(rb.waitForFrame(-1, 10000, WaitScope::Session));
+        sessionMs.store(since());
+    });
+    std::thread ring([&] {
+        ringWoke.store(rb.waitForFrame(-1, 600, WaitScope::Ring));
+        ringMs.store(since());
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    rb.stopRecording();
+    session.join();
+    ring.join();
+
+    CHECK_FALSE(sessionWoke.load());
+    CHECK(sessionMs.load() < 2000);   // woken by stopRecording(), not by the 10 s timeout
+    CHECK_FALSE(ringWoke.load());
+    CHECK(ringMs.load() >= 550);      // the spurious wake-up did not end the Ring wait
+}
+
+TEST_CASE("abortWaits wakes a sleeping waitForFrame at once", "[ring][mt]")
+{
+    RingBuffer::Config cfg;
+    cfg.slotCount = 4;
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(16, 16));
+    REQUIRE(rb.setChannels(1));
+    REQUIRE(rb.configure());
+
+    std::atomic<bool> woke(true);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::thread waiter([&] { woke.store(rb.waitForFrame(-1, 10000)); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    rb.abortWaits();
+    waiter.join();
+
+    CHECK_FALSE(woke.load());
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+}

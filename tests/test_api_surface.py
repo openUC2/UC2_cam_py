@@ -19,7 +19,10 @@ READ_ONLY = [
     "index", "buffer_size", "is_recording", "process_id",
 ]
 SETTINGS = ["exposure_time_ms", "frame_rate_per_sec", "gain_db", "binning", "trigger", "roi"]
-METHODS = ["get_last_image", "get_image", "get_image_info", "start", "stop", "close"]
+METHODS = [
+    "get_last_image", "wait_for_image", "set_image_callback", "get_image", "get_image_info",
+    "start", "stop", "close",
+]
 
 
 def test_data_classes_are_importable_from_outside() -> None:

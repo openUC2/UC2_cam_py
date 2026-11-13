@@ -102,13 +102,15 @@ class DebugWindow:
 
     A new frame is drawn as soon as it is complete in the ring buffer (``wait``
     returns early), at most :data:`MAX_DRAW_RATE_HZ` times per second; when
-    frames come faster, the newest one is shown.
+    frames come faster, the newest one is shown. Window events are processed at
+    least every :data:`WAIT_TIMEOUT_MS`, also while the camera is stopped.
 
     Args:
-        source: Returns the newest image or None (``Camera.get_last_image``).
-        wait: ``wait(after_sequence, timeout_ms)`` blocks without the GIL until a
-            frame newer than ``after_sequence`` is in the ring (backend
-            ``wait_for_frame``).
+        source: Returns the newest image or None (``Camera.get_last_image``);
+            used for the first image, so a stopped camera still shows its last one.
+        wait: ``wait(newer_than, timeout_ms)`` blocks without the GIL until an
+            image newer than ``newer_than`` is in the ring and returns it; None
+            after the timeout, or at once when none can come (camera stopped).
         title: Window title.
         log: Logger of the camera.
 
@@ -120,7 +122,7 @@ class DebugWindow:
     def __init__(
         self,
         source: Callable[[], ImgData | None],
-        wait: Callable[[int, int], bool],
+        wait: Callable[[ImgData | None, int], ImgData | None],
         title: str,
         log: LoggerAdapter,
     ) -> None:
@@ -179,20 +181,23 @@ class DebugWindow:
         return window
 
     def _loop(self, window: PreviewWindow) -> None:
-        last = -1
+        last: ImgData | None = None
         while not self._stop.is_set():
             started = time.monotonic()
-            image = self._source()
-            # "Not equal" rather than "newer": a restart (ROI, binning, start) begins again at 0.
-            if image is not None and image.sequence == last:
-                image = None   # nothing new: only process window events
-            if not window.show(image):
+            # The first image is the newest one there is; after that the wait
+            # tells new from old, across restarts (ROI, binning, start) too.
+            image = self._source() if last is None else self._wait(last, WAIT_TIMEOUT_MS)
+            if not window.show(image):   # None: only process window events
                 self._log.info("debug_window: window closed by the user - the camera keeps running")
                 return
             if image is not None:
-                last = image.sequence
+                last = image
                 self.frames_shown += 1
-                rest = 1.0 / MAX_DRAW_RATE_HZ - (time.monotonic() - started)
-                if rest > 0:
-                    self._stop.wait(rest)
-            self._wait(last, WAIT_TIMEOUT_MS)
+                period = 1.0 / MAX_DRAW_RATE_HZ
+            else:
+                # No new image; the wait may have returned at once (camera stopped,
+                # or no image yet): keep the event rate without spinning.
+                period = WAIT_TIMEOUT_MS / 1000.0
+            rest = period - (time.monotonic() - started)
+            if rest > 0:
+                self._stop.wait(rest)

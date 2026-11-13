@@ -226,6 +226,43 @@ int reap(pid_t pid)
     return status;
 }
 
+/// Fork a child that records one frame into a shared ring, sends its memfd,
+/// calls stopRecording() after @p stopAfterMs and then stays alive until the
+/// parent closes its socket end - so only stopRecording() can wake the parent.
+Child forkRecordingProducer(int stopAfterMs)
+{
+    int sv[2];
+    REQUIRE(::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) == 0);
+    const pid_t pid = ::fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0)
+    {
+        ::close(sv[0]);
+        {
+            RingBuffer rb(shmConfig(8));
+            if (!configureSmall(rb, 128, 128) || !rb.startRecording())
+            {
+                ::_exit(2);
+            }
+            writePainted(rb);
+            if (!sendFd(sv[1], rb.sharedFd()))
+            {
+                ::_exit(2);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(stopAfterMs));
+            rb.stopRecording();
+            char byte = 0;
+            (void)::recv(sv[1], &byte, 1, 0);   // until the parent closes its end
+        }
+        ::_exit(0);
+    }
+    ::close(sv[1]);
+    Child c;
+    c.pid  = pid;
+    c.sock = sv[0];
+    return c;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -541,6 +578,27 @@ TEST_CASE("waitForFrame wakes up when a frame is committed in another process", 
     CHECK(ms < 5000);   // the futex wake crossed the process boundary
     CHECK(reap(child.pid) == 0);
     ::close(child.sock);
+}
+
+TEST_CASE("stopRecording in another process wakes a WaitScope::Session reader at once", "[shm][mt]")
+{
+    Child child = forkRecordingProducer(200);
+    const int fd = recvFd(child.sock);
+    REQUIRE(fd >= 0);
+    std::shared_ptr<RingBuffer> view = RingBuffer::attach(fd);
+    ::close(fd);
+    REQUIRE(view);
+    REQUIRE(view->isRecording());   // the producer's flag, seen through the region
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool woke = view->waitForFrame(0, 10000, hik::WaitScope::Session);   // frame 0 is there
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    CHECK_FALSE(woke);
+    CHECK(ms < 2000);   // the producer is still alive: only its stopRecording() woke us
+    CHECK_FALSE(view->isRecording());
+    ::close(child.sock);
+    CHECK(reap(child.pid) == 0);
 }
 
 TEST_CASE("a reader survives its producer process being killed mid-frame", "[shm][mt]")

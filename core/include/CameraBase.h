@@ -232,10 +232,14 @@ public:
     // --- Reading (zero-copy) ----------------------------------------------
     /// Pin the most recently committed frame. false if there is none yet.
     bool readLatest(Image& out);
-    /// Block until the current ring holds a frame newer than @p afterSequence
-    /// (-1: any frame), see RingBuffer::waitForFrame(). Before the first start()
-    /// there is no ring: sleeps @p timeoutMs and returns false.
-    bool waitForFrame(int64_t afterSequence, uint32_t timeoutMs);
+    /// Block until an image newer than @p after can be read, and pin the newest
+    /// one. Newer means a later frame of after's ring, or any frame of a later
+    /// ring (session); @p after == nullptr: the next frame committed after the
+    /// call. An Image never filled (no ring) is older than every image. A
+    /// restart (ROI, binning) during the wait is followed into the new session.
+    /// @return false after @p timeoutMs, or at once when no newer image can come
+    ///         any more: not started yet, stopped (also during the wait), closed.
+    bool waitForImage(Image& out, uint32_t timeoutMs, const Image* after = nullptr);
     /// Pin whatever frame occupies ring slot @p slot of the current ring.
     /// false if there is no ring yet, the index is out of range or the slot
     /// holds no complete frame.
