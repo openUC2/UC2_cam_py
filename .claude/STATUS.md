@@ -1,14 +1,15 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-11-13 · Branch `main` · HEAD `0708505` (Merge von PR #2 `ARM_Fence`, echter
-Merge-Commit). Tags `v2.1.1` (`280ad7b`) und `v2.1.2` (`367fe95`) liegen beide auf `main` und
-sind gepusht. `ARM_Fence` ist lokal und remote gelöscht.
-**Nächster Schritt:** Version 2.2.0 (neue Bilder ohne Polling, oberster Eintrag unten) ist
-umgesetzt, aber nicht committet; Commit und Tag `v2.2.0` entscheidet der Nutzer. Offen bleiben
-§11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die acht Befunde der Bewertung
-[FableEval.md](FableEval.md).
-**Letzte Arbeitsschritte:** Version 2.2.0: `wait_for_image()` und `set_image_callback()`, dazu
-die zwei Wartefehler behoben. Davor die Bewertung des Pakets in `FableEval.md` (nur Dokument). Davor der
+**Stand:** 2026-11-14 · Branch `main` · HEAD `2785fbc` (2.2.0 und `FableEval.md`, ein Commit,
+gepusht). Tags `v2.1.1` (`280ad7b`), `v2.1.2` (`367fe95`) und `v2.2.0` (`2785fbc`) liegen auf
+`main`.
+**Nächster Schritt:** Version 2.3.0 (Schreibstatistik und `Analysis/MeasureSaveTime.py`,
+oberster Eintrag unten) ist umgesetzt, aber nicht committet; Commit und Tag `v2.3.0` entscheidet
+der Nutzer. Offen bleiben §11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die
+acht Befunde der Bewertung [FableEval.md](FableEval.md).
+**Letzte Arbeitsschritte:** Version 2.3.0: `start(write_stats=True)`, Schreibstatistik in der
+Sidecar, Messskript. Davor 2.2.0: `wait_for_image()` und `set_image_callback()`, dazu die zwei
+Wartefehler behoben. Davor die Bewertung des Pakets in `FableEval.md` (nur Dokument). Davor der
 ARM-Lauf auf dem Pi 5, abgeschlossen mit 2.1.2 (§11.2 Punkt 6). Davor
 `RingBuff_REF.md` an Header und Code angeglichen. Davor Version 2.1.2:
 Im Wait-Modus blieb der Producer stehen, wenn sich ein Consumer anmeldete. Davor der Pi-5-Lauf der ARM-Checkliste (Einträge
@@ -22,9 +23,86 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Neue Bilder ohne Polling: `wait_for_image()` und `set_image_callback()` — Version 2.2.0 — 2026-11-13
+### Schreibstatistik auf Wunsch und `Analysis/MeasureSaveTime.py` — Version 2.3.0 — 2026-11-14
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-14 (überschreibt den
+  Plan von 2.2.0).
+- **Anlass:** Der Nutzer will messen, wie lange das Schreiben eines Bildes auf die Platte und das
+  Auslesen aus der Kamera dauern; ausgegeben werden mean/std/min/max. Vorgaben fürs Skript:
+  Debug-Fenster (Standard aus), Ringgröße (20), Ziel (`CWD/Analysis/SampleData.uc2rb`),
+  Bildzahl (100).
+- **Entscheidungen des Nutzers:**
+  - Gemessen wird der Writer *des Pakets*, kein eigener Python-Schreibweg.
+  - Gemessen wird nur auf Wunsch: `start(write_stats=False)`. Die erste Planfassung maß immer;
+    das hat der Nutzer abgelehnt.
+- **Annahmen** (nicht nachgefragt): „/Analysis/“ ist projektrelativ; „Analsys“ im Standardpfad
+  ist ein Tippfehler für `Analysis`.
+- **Der Schalter, von Python bis zum Writer:**
+  - `Camera.start(write_stats)` → `set_buffer_config(…, write_stats)` →
+    `CameraBase::BufferConfig::writeStats` → `RingBuffer::Config::writeStats` →
+    `FileStreamSink` (liest `m_owner.m_cfg`, Friend).
+  - Er gilt für alle Dateien der Aufnahme, auch nach einem ROI-Neustart, weil
+    `changeGeometry()` `m_cfg` nutzt.
+  - IPC: `SetBufferConfig` hat ein Flag mehr (`flag()`-Helfer im Worker); `kProtocolVersion`
+    ist von 2 auf 3 gestiegen. Der Raw-Test in `test_worker.cpp` sendet das Flag mit.
+- **Writer** (`UC2_RingBuff.cpp`):
+  - Nur bei `m_timed`: `monotonicNs()` um jedes `writevAll()`; nur gespeicherte Frames zählen
+    (Welford: Mittelwert, M2, min, max). Die Werte gehören dem Writer-Thread, bis er gejoint
+    ist.
+  - `onSessionEnd()` misst `fsync` + `close`, setzt `m_lastStats` (unter `m_mtx`) und schreibt
+    die Sidecar mit dem Block `writeStats` neu.
+  - `writeSidecar()` schreibt jetzt immer über `.json.tmp` und `rename()`.
+  - `FileStreamSink::WriteStats` und `writeStats()` sind öffentlich (für die C++-Tests).
+- **Skript `Analysis/MeasureSaveTime.py`:**
+  - Einstellungen als Konstanten oben; jede auch per Kommandozeile. Dazu kommen
+    `--frame-rate` und `--simulated`.
+  - Ablauf: Es nimmt in einen Hilfsordner neben dem Ziel auf, damit dieselbe Platte gemessen
+    wird. Es stoppt, sobald `sequence ≥ N − 1`, verschiebt Datei und Sidecar (`container`
+    angepasst) und liest die Frame-Header mit `_uc2rb`.
+  - Ausgabe: Schreiben pro Bild, Auslesen pro Bild (`time_after − time_before`, also die
+    Kopie SDK → Ring), Bildabstand, `fsync`, Durchsatz und Datenrate der Kamera, dazu
+    Fußnoten zur Einordnung.
+  - `.gitignore`: `*.uc2rb` und `Analysis/SampleData.json`.
+- **Lauf an der MV-CA023-10UM** (USB3, 1920 × 1200 Mono8, 20 ms Belichtung, 32,8 fps), Ziel auf
+  der NVMe unter `build/measure/`:
+  - 100 Bilder, 0 verworfen.
+  - Schreiben 0,376 ± 0,065 ms (0,314–0,622).
+  - Auslesen 0,269 ± 0,031 ms.
+  - Bildabstand 30,49 ms; `fsync` 116 ms; 1429 MiB/s Durchsatz bei 72 MiB/s Kamera-Datenrate.
+- **Nebenbefund, behoben:** Beim Neusetzen der Verweise in 2.2.0 hatte ich in `RingBuff_REF.md`
+  nur die Ziele geändert, nicht die sichtbaren Zeilennummern (z. B. `[L350](…#L357)`). Jetzt
+  stimmen Text und Ziel überein; geändert hat das 20 Überschriften-Anker. Kein interner Link
+  zeigte auf sie; alle 19 internen Links lösen auf. Das Skript dafür lag im Scratchpad: per Diff
+  alt → neu die Ziele setzen, die Linktexte nachziehen, die Anker vergleichen.
+- **Nebenbefund, offen:** `ctest -j8` mit angeschlossener Kamera lässt zwei `HikCamera`-Tests
+  scheitern, weil sie die Kamera gleichzeitig öffnen. Einzeln und über `uv run all_tests`
+  laufen sie. Abhilfe wäre `RESOURCE_LOCK` in CTest; nicht umgesetzt.
+- **Tests:**
+  - Catch2 +4: `[ring][stream]` +3 (ohne Schalter kein Block; mit Schalter Block erst beim
+    Schließen; `FileStreamSink::writeStats()` als eigener Sink), `[worker]` +1 (über den
+    Kamera-Prozess).
+  - pytest +14: `test_session.py` +8 (ohne/mit `write_stats`, ROI-Neustart, `TypeError`, je in
+    beiden Prozessarten), neu `test_measure_save_time.py` mit 6 (Simulated, Standardziel im
+    CWD, Ersetzen, Argumentprüfung, „keine Kamera“, Hardware).
+- **Verifiziert (x86, GCC 16.2.1, mit angeschlossener MV-CA023-10UM):**
+  - `uv run all_tests`: C++ 156/156 (inkl. der 4 Hardware-Tests), Python 313 passed / 3
+    skipped; das Paket meldet `2.3.0`.
+  - ASan und TSan: je 152/152 ohne die Hardware-Tests (parallel), dazu 4/4 Hardware-Tests
+    nacheinander; keine Warnungen. Ohne SDK: 137/137.
+  - Im ersten ASan-Lauf scheiterte der neue Test „with writeStats …“. Er schrieb 10 Frames in
+    8 Slots unter `Overwrite`; der langsamere Writer verlor 2. Das war ein Fehler im Test; er
+    nutzt jetzt `FullPolicy::Wait`. Danach die 4 Statistik-Tests je 50-mal unter debug, ASan
+    und TSan: alle grün.
+  - `uvx ruff check python/ tests/ tools/ Examples/ Analysis/`: sauber.
+  - Verweisprüfung `RingBuff_REF.md`: alle 29 Header- und 7 cpp-Verweise treffen, Text = Ziel.
+- **Offen (Nutzer):** Commit, Tag `v2.3.0`; ein Lauf auf dem Pi 5 (SD-Karte bzw. SSD) wäre die
+  eigentlich interessante Messung.
+
+### Neue Bilder ohne Polling: `wait_for_image()` und `set_image_callback()` — Version 2.2.0 — 2026-11-13
+
+**Implementiert:** ja · **Committet:** ja (`2785fbc`, zusammen mit `FableEval.md`; Tag `v2.2.0`)
 
 - **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-13.
 - **Anlass:** Bisher kam ein einbindendes Programm an neue Bilder nur per Polling mit
@@ -108,7 +186,7 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ### Bewertung des Pakets: `.claude/FableEval.md` — 2026-11-13
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`2785fbc`, zusammen mit 2.2.0)
 
 - **Plan:** `~/.claude/plans/joyful-noodling-clock.md`, freigegeben 2026-11-13. Auftrag des Nutzers:
   Architektur, Dokumentation und Implementierung an den Projektzielen messen (Verteilung auf die
@@ -1024,7 +1102,7 @@ Kurzbefehle (Entwickler-Paket `tools/devtasks`, nur in der `dev`-Gruppe, nicht i
 
 ```bash
 uv run main                       # Kamera wählen, Live-Bild im Debugfenster (= python -m uc2_cam_py)
-uv run py_tests [pytest-Args]     # 302 Tests, ~40 s (Hardware überspringt sich ohne Kamera)
+uv run py_tests [pytest-Args]     # 316 Tests, ~60 s (Hardware überspringt sich ohne Kamera)
 uv run c_tests [ctest-Args]       # build/debug ggf. konfigurieren, bauen, ctest --preset debug
 uv run all_tests                  # beides; beide laufen immer, Exit-Code ≠ 0 bei einem Fehlschlag
 ```
@@ -1039,15 +1117,15 @@ Es gibt zwei Konfigurationswege, und **beide müssen funktionsfähig bleiben**:
 # Vier Presets, je ein Baum build/<preset>: debug (Standard, mit Python-Modul),
 # profile (-O2 -g + Frame Pointer), asan (ASan+UBSan+LSan), tsan. Details: Docs/Tooling.md.
 cmake --preset debug && cmake --build --preset debug
-ctest --preset debug              # 152 Tests; ebenso --preset asan / tsan / profile
+ctest --preset debug              # 156 Tests; ebenso --preset asan / tsan / profile
 
 # Nur der Core, ohne Python-Modul und ohne Programme — schnellere Iteration auf der C++-Seite.
 # Sanitizer/Profiling hier per -DHIK_SANITIZERS="address;undefined"|thread bzw. -DHIK_PROFILING=ON.
 cmake -S core -B build/core -G Ninja -DHIK_BUILD_TESTS=ON
 cmake --build build/core -j8
-ctest --test-dir build/core       # 148 Tests (ohne [hardware])
+ctest --test-dir build/core       # 152 Tests (ohne [hardware])
 
-# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 133 Tests. HIK_MVS=AUTO|ON|OFF.
+# Ohne MVS-SDK (wie ein frischer Checkout): nur Simulated, 137 Tests. HIK_MVS=AUTO|ON|OFF.
 cmake -S core -B build/core-nomvs -G Ninja -DHIK_BUILD_TESTS=ON -DHIK_MVS=OFF
 
 # Analyse (valgrind, perf/hotspot, callgrind/kcachegrind, c2c): tools/analyze.sh, siehe Docs/Tooling.md.
@@ -1059,7 +1137,7 @@ uv pip install -e . --no-build-isolation
 uv run py_tests -q -m "not hardware"                     # ohne Kamera
 uv run py_tests -q -m hardware                           # dieselben Fälle an der HikRobot-Kamera
 UC2_DISPLAY_SECONDS=30 uv run py_tests -m display        # Live-Anzeige im Debugfenster
-uvx ruff check python/ tests/ tools/                     # Lint, Konfiguration in pyproject.toml
+uvx ruff check python/ tests/ tools/ Examples/ Analysis/ # Lint, Konfiguration in pyproject.toml
 
 # Manueller Ring-Buffer-Test ohne Kamera (nur Top-Level-Build): 20 simulierte Mono16-Frames,
 # Analyse- und Anzeige-Thread, Disk-Streaming. Endet, wenn das Vorschaufenster geschlossen wird.

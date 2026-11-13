@@ -307,6 +307,7 @@ bool CameraBase::startLocked()
     rc.comment      = m_cfg.comment;
     rc.policy       = FullPolicy::Overwrite;
     rc.sharedMemory = m_cfg.sharedMemory;
+    rc.writeStats   = m_cfg.writeStats;
 
     auto ring = std::make_shared<RingBuffer>(rc);
     ring->setImageSize(static_cast<uint32_t>(width), static_cast<uint32_t>(height));

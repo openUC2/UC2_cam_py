@@ -68,6 +68,55 @@ def test_recording_writes_header_frames_and_sidecar(open_camera, recording_dir) 
     assert sidecar["softwareVersion"] == uc2_cam_py.__version__
 
 
+@pytest.fixture(params=[pytest.param(True, id="Simulated"), pytest.param(False, id="Simulated-in-process")])
+def recorder(request, open_camera) -> uc2_cam_py.Camera:
+    """The simulated camera recording to disk, in its own process and in this one."""
+    return open_camera(store_image_data=True, separate_process=request.param)
+
+
+def frames_in(path: Path, frame_bytes: int) -> int:
+    return (path.stat().st_size - SESSION_HEADER_BYTES) // (FRAME_HEADER_BYTES + frame_bytes)
+
+
+def test_without_write_stats_the_sidecar_has_none(recorder) -> None:
+    recorder.start()
+    wait_for_frames(recorder, 5)
+    recorder.stop()
+    sidecar = json.loads(Path(recorder.recording_file).with_suffix(".json").read_text())
+    assert "writeStats" not in sidecar
+
+
+def test_write_stats_time_every_saved_image(recorder) -> None:
+    recorder.start(write_stats=True)
+    wait_for_frames(recorder, 10)
+    recorder.stop()
+    path = Path(recorder.recording_file)
+    ws = json.loads(path.with_suffix(".json").read_text())["writeStats"]
+    assert ws["framesSaved"] == frames_in(path, recorder.get_image_info().frame_bytes)
+    assert ws["framesDropped"] == 0
+    assert 0 < ws["frameWriteMinNs"] <= ws["frameWriteMeanNs"] <= ws["frameWriteMaxNs"]
+    assert ws["frameWriteStdNs"] >= 0 and ws["closeNs"] >= 0
+
+
+def test_write_stats_also_cover_the_file_after_a_restart(recorder) -> None:
+    recorder.start(write_stats=True)
+    wait_for_frames(recorder, 3)
+    first = recorder.recording_file
+    recorder.roi = (0, 0, 200, 100)   # restart: a new session, a new file
+    wait_for_frames(recorder, 3)
+    second = recorder.recording_file
+    recorder.stop()
+    assert second != first
+    for path in (first, second):
+        assert "writeStats" in json.loads(Path(path).with_suffix(".json").read_text())
+
+
+def test_write_stats_must_be_a_bool(recorder) -> None:
+    with pytest.raises(TypeError):
+        recorder.start(write_stats="yes")
+    assert not recorder.is_recording
+
+
 def test_every_start_opens_a_new_file(open_camera) -> None:
     cam = open_camera(store_image_data=True)
     files = []

@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1830,6 +1831,14 @@ int FileStreamSink::onSessionStart(const UC2_SessionHeader& header)
     m_saved.store(0);
     m_dropped.store(0);
     m_error.store(false);
+    // Write timing for this file; the writer thread is not running yet.
+    m_timed     = m_owner.m_cfg.writeStats;
+    m_header    = header;
+    m_writes    = 0;
+    m_writeMean = 0.0;
+    m_writeM2   = 0.0;
+    m_writeMin  = 0;
+    m_writeMax  = 0;
 
     std::error_code ec;
     std::filesystem::create_directories(m_dirPath, ec);
@@ -1957,12 +1966,34 @@ void FileStreamSink::onSessionEnd()
 
     if (m_fd >= 0)
     {
+        const int64_t closeStart = monotonicNs();
         ::fsync(m_fd);
         ::close(m_fd);
+        const int64_t closeNs = monotonicNs() - closeStart;
         m_fd = -1;
         INFO("FileStreamSink: closed " + m_filePath + " after "
              + std::to_string(m_saved.load()) + " frames ("
              + std::to_string(m_dropped.load()) + " dropped)");
+        if (m_timed)
+        {
+            // The writer has been joined: its sums are final and ours to read.
+            WriteStats s;
+            s.framesSaved   = m_saved.load();
+            s.framesDropped = m_dropped.load();
+            s.meanNs        = m_writeMean;
+            s.stdNs         = m_writes != 0 ? std::sqrt(m_writeM2 / static_cast<double>(m_writes)) : 0.0;
+            s.minNs         = m_writeMin;
+            s.maxNs         = m_writeMax;
+            s.closeNs       = closeNs;
+            {
+                std::lock_guard<std::mutex> lk(m_mtx);
+                m_lastStats = s;
+            }
+            if (!writeSidecar(m_header, &s))
+            {
+                WARN("FileStreamSink: the JSON sidecar could not be rewritten with the write statistics");
+            }
+        }
     }
 }
 
@@ -2010,7 +2041,9 @@ void FileStreamSink::writerLoop()
 
                 // One syscall for header plus payload, straight out of the ring
                 // slot: no staging copy anywhere on the way to the file.
+                const int64_t writeStart = m_timed ? monotonicNs() : 0;
                 bool ok = writevAll(m_fd, iov, 2);
+                const int64_t writeNs = m_timed ? monotonicNs() - writeStart : 0;
                 if (!ok)
                 {
                     ERR("FileStreamSink: write failed for frame " + std::to_string(m_cursor)
@@ -2030,6 +2063,17 @@ void FileStreamSink::writerLoop()
                 else
                 {
                     m_saved.fetch_add(1, std::memory_order_relaxed);
+                    if (m_timed)
+                    {
+                        // Welford: numerically stable mean and M2 in one pass.
+                        ++m_writes;
+                        const double x     = static_cast<double>(writeNs);
+                        const double delta = x - m_writeMean;
+                        m_writeMean += delta / static_cast<double>(m_writes);
+                        m_writeM2   += delta * (x - m_writeMean);
+                        m_writeMin   = (m_writes == 1) ? writeNs : std::min(m_writeMin, writeNs);
+                        m_writeMax   = (m_writes == 1) ? writeNs : std::max(m_writeMax, writeNs);
+                    }
                 }
                 h.release(true, ok);
             }
@@ -2050,10 +2094,13 @@ void FileStreamSink::writerLoop()
     }
 }
 
-bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header) const
+bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header, const WriteStats* stats) const
 {
+    // Via a temporary file: a sidecar rewritten at the end is replaced in one
+    // step, and an interrupted write leaves the previous one in place.
     const std::string path = std::filesystem::path(m_filePath).replace_extension(".json").string();
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const std::string temp = path + ".tmp";
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0)
     {
         return false;
@@ -2078,8 +2125,21 @@ bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header) const
        << "  \"softwareVersion\": \"" << jsonEscape(header.softwareVersion) << "\",\n"
        << "  \"startTimeUtc\": \"" << formatWallClock(header.startWallNs) << "\",\n"
        << "  \"startWallNs\": " << header.startWallNs << ",\n"
-       << "  \"startMonoNs\": " << header.startMonoNs << "\n"
-       << "}\n";
+       << "  \"startMonoNs\": " << header.startMonoNs;
+    if (stats != nullptr)
+    {
+        os << ",\n"
+           << "  \"writeStats\": {\n"
+           << "    \"framesSaved\": " << stats->framesSaved << ",\n"
+           << "    \"framesDropped\": " << stats->framesDropped << ",\n"
+           << "    \"frameWriteMeanNs\": " << std::llround(stats->meanNs) << ",\n"
+           << "    \"frameWriteStdNs\": " << std::llround(stats->stdNs) << ",\n"
+           << "    \"frameWriteMinNs\": " << stats->minNs << ",\n"
+           << "    \"frameWriteMaxNs\": " << stats->maxNs << ",\n"
+           << "    \"closeNs\": " << stats->closeNs << "\n"
+           << "  }";
+    }
+    os << "\n}\n";
 
     const std::string text = os.str();
     struct iovec iov;
@@ -2087,7 +2147,12 @@ bool FileStreamSink::writeSidecar(const UC2_SessionHeader& header) const
     iov.iov_len  = text.size();
     const bool ok = writevAll(fd, &iov, 1);
     ::close(fd);
-    return ok;
+    if (!ok || ::rename(temp.c_str(), path.c_str()) != 0)
+    {
+        ::unlink(temp.c_str());
+        return false;
+    }
+    return true;
 }
 
 void FileStreamSink::setDirectory(const std::string& dirPath)
@@ -2107,5 +2172,11 @@ std::string FileStreamSink::filePath() const
 uint64_t FileStreamSink::framesSaved() const   { return m_saved.load(std::memory_order_relaxed); }
 uint64_t FileStreamSink::framesDropped() const { return m_dropped.load(std::memory_order_relaxed); }
 bool     FileStreamSink::hasError() const      { return m_error.load(std::memory_order_relaxed); }
+
+FileStreamSink::WriteStats FileStreamSink::writeStats() const
+{
+    std::lock_guard<std::mutex> lk(m_mtx);
+    return m_lastStats;
+}
 
 } // namespace hik

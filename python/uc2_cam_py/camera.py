@@ -866,23 +866,35 @@ class Camera:
         }
         return json.dumps(info)
 
-    def start(self) -> None:
+    def start(self, write_stats: bool = False) -> None:
         """Start acquiring images into the buffer (and to disk if enabled).
 
         Each start opens a new recording session (a new ``.uc2rb`` file). Does
         nothing if already recording.
 
+        Args:
+            write_stats: Time how long writing each image to disk takes. When a
+                recording file is closed, its ``.json`` sidecar then gets a
+                ``"writeStats"`` block (mean, std, min, max per image, and the
+                final fsync). Applies to every file of this acquisition, also
+                after a restart for ``roi``/``binning`` and when
+                ``store_image_data`` is switched on later; without
+                ``store_image_data`` nothing is written, so nothing is timed.
+
         Raises:
             RuntimeError: The camera is closed or could not be started.
+            TypeError: ``write_stats`` is not a bool.
             MemoryError, OSError: See the buffer and disk checks.
         """
         self._require_open()
+        if not isinstance(write_stats, bool):
+            raise TypeError(f"write_stats must be a bool, got {type(write_stats).__name__}")
         if self.is_recording:
             self._log.debug("start(): already recording")
             return
         self._check_resources(log_disk_estimate=False)
         storage = str(self._image_file_path) if self._store_image_data else ""
-        self._backend.set_buffer_config(self._buffer_size, storage, self._session_comment())
+        self._backend.set_buffer_config(self._buffer_size, storage, self._session_comment(), write_stats)
         if not self._backend.start():
             _logging.flush()
             message = "acquisition could not be started (see the log for the reason)"

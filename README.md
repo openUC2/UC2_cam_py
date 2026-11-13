@@ -52,6 +52,8 @@ UC2_cam_py/
 │   ├── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
 │   ├── export_recordings.py  #   Python: export recordings as OME-TIFF and read them back
 │   └── newest_image.py       #   Python: the newest image by polling, waiting or callback
+├── Analysis/                 # measurement scripts
+│   └── MeasureSaveTime.py    #   disk write time and readout time per image (HikRobot camera)
 ├── bindings/
 │   └── hik_py.cpp            # pybind11 module (_hik), low level
 ├── python/uc2_cam_py/        # the Python package
@@ -270,6 +272,16 @@ All three ways, with the simulated camera:
 
 ```bash
 uv run python Examples/newest_image.py
+```
+
+How long writing each image to disk takes, and reading it out, is measured by
+`Analysis/MeasureSaveTime.py` with the first connected HikRobot camera. It records with
+`start(write_stats=True)` and prints mean, std, min and max
+([interface spec §7.5](Docs/UC2_cam_py_interface.md#75-recording)):
+
+```bash
+uv run python Analysis/MeasureSaveTime.py             # 100 images to ./Analysis/SampleData.uc2rb
+uv run python Analysis/MeasureSaveTime.py --help      # images, buffer size, target, debug window
 ```
 
 Live view without extra dependencies — `debug_window=True` is the only way to open a

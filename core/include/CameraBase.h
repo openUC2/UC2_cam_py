@@ -133,6 +133,7 @@ public:
         std::string storagePath;      ///< directory for the .uc2rb file; empty = RAM only
         std::string comment;          ///< free text for the session header (<= 8191 chars)
         bool        sharedMemory = false;  ///< ring in a sealed memfd, for a reader in another process
+        bool        writeStats   = false;  ///< time every frame write to disk (RingBuffer::Config::writeStats)
     };
 
     /// One frame read from the ring: the pinned slot plus the ring it lives in.

@@ -36,3 +36,7 @@ HiKCam_Samplesusw/
 External/hik/*
 !External/hik/README.md
 
+
+# Recordings, and the sample data of Analysis/MeasureSaveTime.py (default target)
+*.uc2rb
+Analysis/SampleData.json

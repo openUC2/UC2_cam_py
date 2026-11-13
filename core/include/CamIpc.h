@@ -25,7 +25,7 @@ namespace hik {
 namespace ipc {
 
 static const uint32_t kMagic           = 0x43324355u;   ///< "UC2C" in memory order
-static const uint16_t kProtocolVersion = 2;   ///< 2: Hello carries the software version
+static const uint16_t kProtocolVersion = 3;   ///< 2: Hello carries the software version; 3: SetBufferConfig carries writeStats
 static const size_t   kHeadBytes       = 16;
 static const size_t   kMaxMessageBytes = 64 * 1024;     ///< far above the largest message (an 8 KiB comment)
 

@@ -559,3 +559,110 @@ TEST_CASE("stopStreaming finishes although the producer keeps writing", "[ring][
     CHECK(records.size() == rb.streamFramesSaved());
     CHECK(records.back().header.sequence < writtenAfterStop);
 }
+
+// --- write statistics (Config::writeStats) ------------------------------------
+
+namespace {
+
+/// Value of the integer field @p key in the JSON @p text; -1 if it is missing.
+long long jsonInt(const std::string& text, const std::string& key)
+{
+    const std::string needle = "\"" + key + "\": ";
+    const size_t at = text.find(needle);
+    return at == std::string::npos ? -1 : std::stoll(text.substr(at + needle.size()));
+}
+
+std::string sidecarOf(const std::string& container)
+{
+    return std::filesystem::path(container).replace_extension(".json").string();
+}
+
+} // namespace
+
+TEST_CASE("without writeStats the sidecar has no write statistics", "[ring][stream]")
+{
+    TempDir dir("nostats");
+    RingBuffer::Config cfg;
+    cfg.storagePath = dir.str();
+    cfg.slotCount   = 8;
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(4, 4));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+    writeFrames(rb, 0, 5);
+    const std::string path = rb.streamFilePath();
+    rb.stopRecording();
+
+    CHECK(rb.streamFramesSaved() == 5);
+    const std::string text = slurp(sidecarOf(path));
+    CHECK(text.find("\"startMonoNs\"") != std::string::npos);
+    CHECK(text.find("writeStats") == std::string::npos);   // as before 2.3.0
+    CHECK_FALSE(std::filesystem::exists(sidecarOf(path) + ".tmp"));
+}
+
+TEST_CASE("with writeStats the sidecar gets the write timing when the file is closed", "[ring][stream]")
+{
+    TempDir dir("stats");
+    RingBuffer::Config cfg;
+    cfg.storagePath   = dir.str();
+    cfg.slotCount     = 8;
+    cfg.writeStats    = true;
+    cfg.policy        = hik::FullPolicy::Wait;   // 10 frames in 8 slots: none may be overwritten
+    cfg.waitTimeoutMs = 5000;
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(64, 32));
+    REQUIRE(rb.configure());
+    REQUIRE(rb.startRecording());
+    writeFrames(rb, 0, 10);
+    const std::string path = rb.streamFilePath();
+    CHECK(slurp(sidecarOf(path)).find("writeStats") == std::string::npos);   // only at the end
+    rb.stopRecording();
+
+    const std::string text = slurp(sidecarOf(path));
+    REQUIRE(text.find("\"writeStats\": {") != std::string::npos);
+    CHECK(jsonInt(text, "framesSaved") == 10);
+    CHECK(jsonInt(text, "framesDropped") == 0);
+    const long long mean = jsonInt(text, "frameWriteMeanNs");
+    const long long lo   = jsonInt(text, "frameWriteMinNs");
+    const long long hi   = jsonInt(text, "frameWriteMaxNs");
+    CHECK(lo > 0);
+    CHECK(lo <= mean);
+    CHECK(mean <= hi);
+    CHECK(jsonInt(text, "frameWriteStdNs") >= 0);
+    CHECK(jsonInt(text, "closeNs") >= 0);
+    CHECK(text.find("\"startMonoNs\"") != std::string::npos);   // the rest is still there
+    CHECK(text.back() == '\n');
+    CHECK_FALSE(std::filesystem::exists(sidecarOf(path) + ".tmp"));
+}
+
+TEST_CASE("FileStreamSink::writeStats reports the last closed file", "[ring][stream]")
+{
+    TempDir dir("sinkstats");
+    RingBuffer::Config cfg;   // no storage path: the sink below is the only writer
+    cfg.slotCount  = 8;
+    cfg.writeStats = true;
+    RingBuffer rb(cfg);
+    REQUIRE(rb.setImageSize(64, 32));
+    REQUIRE(rb.configure());
+    hik::FileStreamSink sink(rb, dir.str());
+    REQUIRE(rb.addSink(sink.ops()));
+    CHECK(sink.writeStats().framesSaved == 0);   // nothing closed yet
+
+    REQUIRE(rb.startRecording());
+    writeFrames(rb, 0, 7);
+    rb.stopRecording();
+
+    const hik::FileStreamSink::WriteStats s = sink.writeStats();
+    CHECK(s.framesSaved == 7);
+    CHECK(s.framesDropped == 0);
+    CHECK(s.minNs > 0);
+    CHECK(static_cast<double>(s.minNs) <= s.meanNs);
+    CHECK(s.meanNs <= static_cast<double>(s.maxNs));
+    CHECK(s.stdNs >= 0.0);
+    CHECK(s.stdNs <= static_cast<double>(s.maxNs - s.minNs));
+    CHECK(s.closeNs >= 0);
+    const std::string text = slurp(sidecarOf(sink.filePath()));
+    CHECK(jsonInt(text, "framesSaved") == 7);
+    CHECK(jsonInt(text, "frameWriteMinNs") == s.minNs);
+    CHECK(jsonInt(text, "frameWriteMaxNs") == s.maxNs);
+}

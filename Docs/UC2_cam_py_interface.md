@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 2.2.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 2.3.0). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -194,7 +194,7 @@ sensor is read out.
 | `set_image_callback(callback, max_rate_hz=None)` | callable `(ImgData) -> Any` or `None`; `float > 0` or `None` | `None` | *Addition.* Calls `callback(img)` for every new image, on a thread of its own; `None` removes it. One callback per camera. Details: [§7.10](#710-waiting-for-new-images-and-callbacks). |
 | `get_image(index)` | `int`, `0 ≤ index < buffer_size` | `ImgData` | The image in buffer slot `index`. `TypeError` for a non-int, `IndexError` if out of range, `LookupError` if the slot holds no completely recorded image. |
 | `get_image_info()` | – | `ImgMetaData \| None` | Metadata of the current or last recording **session** (the `UC2_SessionHeader`); `None` before the first `start()`. |
-| `start()` | – | `None` | Start acquisition: allocates a new buffer for the current geometry and opens a new session (a new `.uc2rb` file if storing). Does nothing if already recording. Raises `RuntimeError` on failure, plus `MemoryError`/`OSError` from the resource checks. |
+| `start(write_stats=False)` | `bool` | `None` | Start acquisition: allocates a new buffer for the current geometry and opens a new session (a new `.uc2rb` file if storing). Does nothing if already recording. Raises `RuntimeError` on failure, plus `MemoryError`/`OSError` from the resource checks. *Addition:* `write_stats=True` times every image written to disk ([§7.5](#75-recording)); `TypeError` for a non-bool. |
 | `stop()` | – | `None` | Stop acquisition. Recorded images stay readable until the next `start()`. |
 | `close()` | – | `None` | *Addition.* Stop and release the camera. Images already read stay valid. Afterwards `start()` raises `RuntimeError`. |
 | `with ... as cam` | – | – | *Addition.* `__enter__`/`__exit__`; `__exit__` calls `close()`. |
@@ -300,6 +300,22 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   The camera thread never touches the file system.
 - **Dropped frames.** If the disk cannot keep up, frames are dropped from the file (counted),
   never from the camera.
+- **Write statistics** (*addition*, 2.3.0). With `start(write_stats=True)` the writer times
+  every image it writes, and when a file is closed its `.json` sidecar gets a `"writeStats"`
+  block; without it the block is missing. All times are in ns:
+
+  | Field | Meaning |
+  |---|---|
+  | `framesSaved`, `framesDropped` | images written to the file, and dropped from it |
+  | `frameWriteMeanNs`, `frameWriteStdNs`, `frameWriteMinNs`, `frameWriteMaxNs` | duration of the one `writev()` per image (frame header + pixels): mean, standard deviation, min, max |
+  | `closeNs` | the `fsync()` and `close()` at the end |
+
+  A `writev()` lands in the page cache; when the disk falls behind, the kernel holds it up. The
+  times therefore show whether the writer keeps up, not the bare disk latency. The setting
+  applies to every file of the acquisition, also after a restart for `roi`/`binning` and when
+  `store_image_data` is switched on later. Without `store_image_data` nothing is written, so
+  nothing is timed. [`Analysis/MeasureSaveTime.py`](../Analysis/MeasureSaveTime.py) prints these
+  values for a camera.
 - Format details: [RingBuff_REF.md](RingBuff_REF.md) §8.
 
 ### 7.6 Logging
@@ -607,6 +623,7 @@ camera first).
 - `vendor_options`, `list_devices`, `list_cameras` / `CameraInfo`, `debug_window`,
 - `separate_process` and `process_id` (one process per camera),
 - `wait_for_image()` and `set_image_callback()` (new images without polling, §7.10),
+- `start(write_stats=True)` and the write statistics in the sidecar (§7.5),
 - `store_image_data` as a setting, switchable while recording,
 - the settings JSON in the session comment.
 

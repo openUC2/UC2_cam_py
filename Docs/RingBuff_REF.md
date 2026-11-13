@@ -74,7 +74,7 @@ lassen.
 
 `configure()` berechnet das Layout, fordert die Region über `UC2_MemoryOps::acquire` an (64-Byte-
 Alignment), nullt sie und legt die Objekte mit Placement-new an
-([UC2_RingBuff.cpp:746](../core/src/UC2_RingBuff.cpp#L759)).
+([UC2_RingBuff.cpp:760](../core/src/UC2_RingBuff.cpp#L760)).
 
 ```
 Offset 0                  UC2_SessionHeader             8448 B
@@ -99,7 +99,7 @@ payloadOffset             Payload[slotCount]             slotCount × slotStride
 | Gesamtgröße der Region | ≤ 16 GiB |
 
 **Layout-Invarianten** werden per `static_assert` erzwungen
-([UC2_RingBuff.cpp:40-59](../core/src/UC2_RingBuff.cpp#L40-L59)):
+([UC2_RingBuff.cpp:41-60](../core/src/UC2_RingBuff.cpp#L41-L60)):
 
 - Die Strukturgrößen sind fest: `UC2_SessionHeader` = 8448 B, `UC2_FrameHeader` = 64 B,
   `UC2_SlotRecord` = 64 B, `UC2_Consumer` = 64 B.
@@ -134,7 +134,7 @@ registrierten Consumer bestätigt haben.
 | `Overwrite` (0) | Nie blockieren. Der Slot wird recycelt; wurde der alte Frame nie gelesen, zählt `framesOverwritten()` hoch. |
 | `Wait` (1) | Blockieren, bis alle registrierten Consumer den alten Frame bestätigt haben und kein Reader den Slot mehr pinnt. Nach `Config::waitTimeoutMs` wird trotzdem überschrieben und `waitTimeouts()` zählt hoch. |
 
-### `enum class WaitScope : uint8_t` — [L93](../core/include/UC2_RingBuff.h#L94)
+### `enum class WaitScope : uint8_t` — [L94](../core/include/UC2_RingBuff.h#L94)
 
 Legt fest, wann `waitForFrame()` vor dem Timeout aufgibt (seit 2.2.0).
 
@@ -143,7 +143,7 @@ Legt fest, wann `waitForFrame()` vor dem Timeout aufgibt (seit 2.2.0).
 | `Ring` (0, Standard) | Nur nach dem Timeout oder nach `abortWaits()`. Ein Ring darf auch ohne Aufnahme beschrieben werden (Tests, `RingBuffExample`), daher ist das der Standard. |
 | `Session` (1) | Zusätzlich sofort, solange `recording == 0`: Nach `stopRecording()` kann kein Frame mehr kommen. `CameraBase`/`RemoteCamera::waitForImage()` warten so. |
 
-### `enum FrameFlag : uint32_t` — [L94](../core/include/UC2_RingBuff.h#L101)
+### `enum FrameFlag : uint32_t` — [L101](../core/include/UC2_RingBuff.h#L101)
 
 Statusbits pro Frame in `UC2_SlotRecord::flags` und `UC2_FrameHeader::flags`.
 
@@ -174,7 +174,7 @@ Statusbits pro Frame in `UC2_SlotRecord::flags` und `UC2_FrameHeader::flags`.
 Alle Strukturen dieses Abschnitts bis auf `UC2_FrameRef` stehen unter `#pragma pack(push, 8)` und
 dürfen in der Region liegen (keine Pointer, keine vtables).
 
-### `UC2_SessionHeader` (8448 B) — [L138](../core/include/UC2_RingBuff.h#L145)
+### `UC2_SessionHeader` (8448 B) — [L145](../core/include/UC2_RingBuff.h#L145)
 
 Beschreibt eine Aufnahmesitzung. `configure()` füllt ihn, `startRecording()` ergänzt die beiden
 Startzeiten. Er wird unverändert an den Anfang der Container-Datei kopiert.
@@ -203,7 +203,7 @@ Startzeiten. Er wird unverändert an den Anfang der Container-Datei kopiert.
 > Sommerzeit. Das Paar `startWallNs`/`startMonoNs` rechnet sie in absolute Zeit um:
 > `wallNs(frame) = startWallNs + (tsNs(frame) − startMonoNs)`.
 
-### `UC2_FrameHeader` (64 B) — [L161](../core/include/UC2_RingBuff.h#L168)
+### `UC2_FrameHeader` (64 B) — [L168](../core/include/UC2_RingBuff.h#L168)
 
 Datensatzkopf vor jedem Frame in der Container-Datei.
 
@@ -219,7 +219,7 @@ Datensatzkopf vor jedem Frame in der Container-Datei.
 | `depth` | `uint8_t` | `PixelDepth`-Wert |
 | `reserved` | `uint8_t[11]` | — |
 
-### `UC2_SlotRecord` (64 B) — [L178](../core/include/UC2_RingBuff.h#L185)
+### `UC2_SlotRecord` (64 B) — [L185](../core/include/UC2_RingBuff.h#L185)
 
 Verwaltungsdaten eines Slots in der Region. Alle veränderlichen Felder sind atomar.
 
@@ -233,7 +233,7 @@ Verwaltungsdaten eines Slots in der Region. Alle veränderlichen Felder sind ato
 | `tsBeforeNs`, `tsAfterNs` | `atomic<int64_t>` | Monotonic-Zeitstempel |
 | `payloadOffset` | `uint64_t` | Byte-Offset der Payload ab Region-Basis. Nur informativ: Lesen und Schreiben berechnen die Adresse aus der eigenen Geometrie (`payloadAt(slot)`) |
 
-### `UC2_Consumer` (64 B) — [L195](../core/include/UC2_RingBuff.h#L202)
+### `UC2_Consumer` (64 B) — [L202](../core/include/UC2_RingBuff.h#L202)
 
 Bestätigungscursor eines registrierten Consumers. Er belegt eine eigene Cache-Line, damit
 Consumer und Producer sich nicht gegenseitig die Cache-Line entziehen.
@@ -243,7 +243,7 @@ Consumer und Producer sich nicht gegenseitig die Cache-Line entziehen.
 | `active` | `atomic<uint32_t>` | 0 = frei, 1 = aktiv, 2 = wird gerade angemeldet. Nur 1 hält den Producer im Wait-Modus auf; 2 hält den Eintrag frei, bis `ackSequence` gesetzt ist |
 | `ackSequence` | `atomic<uint64_t>` | Erste Sequenz, die **noch nicht** bestätigt ist |
 
-### `UC2_Control` (576 B) — [L204](../core/include/UC2_RingBuff.h#L211)
+### `UC2_Control` (576 B) — [L211](../core/include/UC2_RingBuff.h#L211)
 
 Producer-Cursor, Zähler und Consumer-Tabelle.
 
@@ -260,7 +260,7 @@ Producer-Cursor, Zähler und Consumer-Tabelle.
 | `frameWaiters` | Zahl der Leser, die gerade in `waitForFrame()` schlafen; nur dann ruft der Producer `FUTEX_WAKE` |
 | `consumers[kMaxConsumers]` | Tabelle der `UC2_Consumer` |
 
-### `UC2_FrameRef` — [L223](../core/include/UC2_RingBuff.h#L230)
+### `UC2_FrameRef` — [L230](../core/include/UC2_RingBuff.h#L230)
 
 Beschreibt einen veröffentlichten Frame für den Callback `UC2_SinkOps::onFrame`. Enthält einen
 rohen Pointer und liegt deshalb **nie** in der Region.
@@ -289,7 +289,7 @@ Beide Strukturen sind bewusst C-Structs aus Funktionszeigern und keine C++-Inter
 Beide tragen `abiVersion`, das gleich `kAbiVersion` sein muss. Sonst wird die Registrierung mit
 einem Log-Eintrag abgelehnt.
 
-### Funktionszeiger-Typen — [L250-L263](../core/include/UC2_RingBuff.h#L257-L270)
+### Funktionszeiger-Typen — [L257-L270](../core/include/UC2_RingBuff.h#L257-L270)
 
 | Typ | Signatur | Semantik |
 |---|---|---|
@@ -300,7 +300,7 @@ einem Log-Eintrag abgelehnt.
 | `UC2_SessionEndFn` | `void (void* ctx)` | Sitzung schließt |
 | `UC2_DestroyFn` | `void (void* ctx)` | Der Puffer gibt seine Referenz auf den Sink auf (Platz für einen PyCapsule-Destruktor) |
 
-### `UC2_MemoryOps` — [L269](../core/include/UC2_RingBuff.h#L276)
+### `UC2_MemoryOps` — [L276](../core/include/UC2_RingBuff.h#L276)
 
 Liefert die Speicherregion des Puffers.
 
@@ -316,19 +316,19 @@ den eingebauten memfd-Allocator ([§12](#12-shared-memory-memfd-und-attach)); be
 `setMemoryOps()` aus. Ein eigener Allocator wird über `RingBuffer::setMemoryOps()` vor `configure()`
 installiert.
 
-### `UC2_SinkOps` — [L284](../core/include/UC2_RingBuff.h#L291)
+### `UC2_SinkOps` — [L291](../core/include/UC2_RingBuff.h#L291)
 
 Ein Abnehmer veröffentlichter Frames. Heute ist das der eingebaute Disk-Streamer, später z. B. ein
 Python-Hook. Alle vier Callbacks sind optional; `nullptr` wird übersprungen.
 
 | Feld | Aufgerufen … | Implementierung |
 |---|---|---|
-| `abiVersion` | geprüft in `addSink()` | [cpp:977](../core/src/UC2_RingBuff.cpp#L990) |
+| `abiVersion` | geprüft in `addSink()` | [cpp:991](../core/src/UC2_RingBuff.cpp#L991) |
 | `ctx` | an jeden Callback | — |
-| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:1033](../core/src/UC2_RingBuff.cpp#L1046) |
-| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:1114](../core/src/UC2_RingBuff.cpp#L1130) |
-| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:1076](../core/src/UC2_RingBuff.cpp#L1092) |
-| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:1003](../core/src/UC2_RingBuff.cpp#L1016) |
+| `onSessionStart` | in `startRecording()`, in Registrierungsreihenfolge | [cpp:1047](../core/src/UC2_RingBuff.cpp#L1047) |
+| `onFrame` | in `commitWrite()` → `dispatchFrame()`, nur während einer Aufnahme | [cpp:1131](../core/src/UC2_RingBuff.cpp#L1131) |
+| `onSessionEnd` | in `stopRecording()` und beim Rückabwickeln eines fehlgeschlagenen Starts | [cpp:1093](../core/src/UC2_RingBuff.cpp#L1093) |
+| `destroy` | in `destroySinks()` aus dem `RingBuffer`-Destruktor | [cpp:1017](../core/src/UC2_RingBuff.cpp#L1017) |
 
 **Verhalten im Detail**
 
@@ -357,7 +357,7 @@ Python-Hook. Alle vier Callbacks sind optional; `nullptr` wird übersprungen.
 
 ## 7. Klasse `RingBuffer`
 
-[L345](../core/include/UC2_RingBuff.h#L352). Weder kopierbar noch verschiebbar, weil Handles in
+[L352](../core/include/UC2_RingBuff.h#L352). Weder kopierbar noch verschiebbar, weil Handles in
 die Region zeigen.
 
 ### 7.1 Lebenszyklus
@@ -402,7 +402,7 @@ hik::RingBuffer::ReadHandle r;
 if (rb.readLatest(r)) { use(r.data(), r.nbytes()); }   // keine Kopie
 ```
 
-### 7.2 `RingBuffer::Config` — [L350](../core/include/UC2_RingBuff.h#L357)
+### 7.2 `RingBuffer::Config` — [L357](../core/include/UC2_RingBuff.h#L357)
 
 Die Geometrie gehört absichtlich nicht dazu, weil sie normalerweise erst nach dem Öffnen der
 Kamera bekannt ist.
@@ -415,8 +415,9 @@ Kamera bekannt ist.
 | `policy` | `FullPolicy` | `Overwrite` | Verhalten bei vollem Ring |
 | `waitTimeoutMs` | `uint32_t` | 1000 | Timeout im Wait-Modus, danach wird überschrieben |
 | `sharedMemory` | `bool` | `false` | Region in einem versiegelten memfd, den ein anderer Prozess mit `attach()` abbilden kann (nur Linux) |
+| `writeStats` | `bool` | `false` | Der Disk-Streamer misst jedes `writev()` und das abschließende `fsync()`/`close()`; die Sidecar bekommt beim Schließen den Block `writeStats` (§8). Seit 2.3.0 |
 
-### 7.3 `RingBuffer::WriteHandle` — [L365](../core/include/UC2_RingBuff.h#L372)
+### 7.3 `RingBuffer::WriteHandle` — [L373](../core/include/UC2_RingBuff.h#L373)
 
 Reservierung eines Slots durch den Producer. Nur verschiebbar (move-only). Wird ein gehaltenes
 Handle zerstört oder per Move überschrieben, wird der Schreibvorgang abgebrochen
@@ -430,7 +431,7 @@ Handle zerstört oder per Move überschrieben, wird der Schreibvorgang abgebroch
 | `uint64_t sequence() const` | Globaler Index, den dieser Frame bekommt |
 | `uint32_t slot() const` | Slot-Index |
 
-### 7.4 `RingBuffer::ReadHandle` — [L407](../core/include/UC2_RingBuff.h#L414)
+### 7.4 `RingBuffer::ReadHandle` — [L415](../core/include/UC2_RingBuff.h#L415)
 
 Sicht eines Consumers auf einen Frame. Nur verschiebbar (move-only). Solange es gehalten wird,
 **pinnt** es den Slot; der Destruktor gibt ihn frei wie `release(true, false)`.
@@ -451,7 +452,7 @@ dem Verarbeiten `stillValid()` prüfen.
 | `int64_t tsBeforeNs() const` / `tsAfterNs() const` | Monotonic-Zeitstempel |
 | `uint32_t flags() const` | `FrameFlag`-Bits zum Zeitpunkt des Lesens |
 
-### 7.5 Konstruktion, Geometrie und Identität — [L453-L505](../core/include/UC2_RingBuff.h#L460-L512)
+### 7.5 Konstruktion, Geometrie und Identität — [L461-L513](../core/include/UC2_RingBuff.h#L461-L513)
 
 | Methode | Beschreibung | `false` wenn |
 |---|---|---|
@@ -468,7 +469,7 @@ dem Verarbeiten `stillValid()` prüfen.
 `attach()`, `isAttached()` und `sharedFd()` liegen im Header ebenfalls in diesem Bereich; sie sind
 in [§12](#12-shared-memory-memfd-und-attach) beschrieben.
 
-### 7.6 Aufnahme und Sinks — [L507-L525](../core/include/UC2_RingBuff.h#L514-L532)
+### 7.6 Aufnahme und Sinks — [L515-L533](../core/include/UC2_RingBuff.h#L515-L533)
 
 | Methode | Beschreibung |
 |---|---|
@@ -477,7 +478,7 @@ in [§12](#12-shared-memory-memfd-und-attach) beschrieben.
 | `bool isRecording() const` | `true` zwischen erfolgreichem Start und Stop |
 | `bool addSink(const UC2_SinkOps& ops)` | Registriert einen Sink. `false` bei falscher `abiVersion` oder laufender Aufnahme. Sinks lassen sich nicht wieder abmelden. |
 
-### 7.7 Producer — [L527-L563](../core/include/UC2_RingBuff.h#L534-L570)
+### 7.7 Producer — [L535-L571](../core/include/UC2_RingBuff.h#L535-L571)
 
 Es gibt genau **einen** Producer. Ein zweiter gleichzeitiger `beginWrite()` wird abgewiesen
 (Log-Eintrag, `false`).
@@ -491,7 +492,7 @@ Es gibt genau **einen** Producer. Ein zweiter gleichzeitiger `beginWrite()` wird
 | `void abortWrite(WriteHandle& handle)` | Gibt den Slot unveröffentlicht zurück (Flags = 0, Seqlock wieder gerade, `aborted`++). Die Sequenznummer wird erneut vergeben, veröffentlichte Indizes bleiben also lückenlos. Der Frame, der vorher in diesem Slot lag, ist danach nicht mehr lesbar. |
 | `bool writeFrame(const void* src, uint64_t nbytes)` | Komfortfunktion: `beginWrite` + `memcpy` + `commitWrite`. `false` bei `src == nullptr` oder wenn `beginWrite` scheitert. |
 
-### 7.8 Consumer — [L565-L608](../core/include/UC2_RingBuff.h#L572-L624)
+### 7.8 Consumer — [L573-L625](../core/include/UC2_RingBuff.h#L573-L625)
 
 | Methode | Beschreibung |
 |---|---|
@@ -508,7 +509,7 @@ Es gibt genau **einen** Producer. Ein zweiter gleichzeitiger `beginWrite()` wird
 einen Slot, oder der Seqlock war beim Lesen ungerade bzw. hat sich zwischen den beiden Prüfungen
 geändert. Die Seqlock-Fälle zählen `rejectedReads()` hoch.
 
-### 7.9 Metadaten und Statistik — [L610-L634](../core/include/UC2_RingBuff.h#L626-L650)
+### 7.9 Metadaten und Statistik — [L627-L651](../core/include/UC2_RingBuff.h#L627-L651)
 
 | Methode | Rückgabe |
 |---|---|
@@ -527,7 +528,7 @@ geändert. Die Seqlock-Fälle zählen `rejectedReads()` hoch.
 | `uint64_t rejectedReads()` | Vom Seqlock abgewiesene Lesezugriffe |
 | `uint32_t slotFlags(uint32_t slot)` | Aktuelle `FrameFlag`-Bits eines Slots (0, wenn außerhalb des Bereichs) |
 
-### 7.10 Disk-Streaming — [L636-L659](../core/include/UC2_RingBuff.h#L652-L675)
+### 7.10 Disk-Streaming — [L653-L676](../core/include/UC2_RingBuff.h#L653-L676)
 
 Diese Methoden steuern den eingebauten `FileStreamSink` bzw. leiten an ihn weiter. Er läuft nicht
 über `m_sinks`: Diese Liste darf sich während einer Sitzung nicht ändern, Streaming lässt sich aber
@@ -548,7 +549,7 @@ Sink selbst lebt von `configure()` bis zum Destruktor, der Zeiger hängt also ni
 
 ## 8. Klasse `FileStreamSink` und Container-Format
 
-[L768](../core/include/UC2_RingBuff.h#L785). `configure()` legt den Streamer immer an (ohne
+[L790](../core/include/UC2_RingBuff.h#L790). `configure()` legt den Streamer immer an (ohne
 Verzeichnis ruht er). Der `RingBuffer` besitzt ihn über `std::unique_ptr` und ruft seine
 Sitzungs-Hooks direkt auf (siehe §7.10), nicht über `addSink`. `ops()` bleibt für eigene Instanzen,
 die man selbst mit `addSink(ops())` anhängt; `ops().destroy` ist `nullptr`. Eine Instanz kann
@@ -564,6 +565,7 @@ nacheinander mehrere Dateien öffnen und schließen.
 | `uint64_t framesSaved()` | Angehängte Frames |
 | `uint64_t framesDropped()` | Verlorene oder zerrissene Frames |
 | `bool hasError()` | Ein Öffnen oder Schreiben ist fehlgeschlagen |
+| `WriteStats writeStats()` | Schreibzeiten der zuletzt geschlossenen Datei (seit 2.3.0); alles 0 ohne `Config::writeStats` oder bevor eine Datei geschlossen wurde. Felder: `framesSaved`, `framesDropped`, `meanNs`, `stdNs` (Population), `minNs`, `maxNs` je `writev()` eines Frames, `closeNs` für `fsync()` + `close()` |
 
 ### Ablauf
 
@@ -580,10 +582,12 @@ nacheinander mehrere Dateien öffnen und schließen.
 2. **`onFrame`** (Producer-Thread) weckt nur den Writer-Thread und liest den Frame nicht.
 3. **Writer-Thread** liest jede Sequenz mit `readSequence()` als registrierter Consumer und
    schreibt `UC2_FrameHeader` plus Payload mit **einem** `writev()` direkt aus dem Slot. Er
-   reagiert auf Signale und fragt zusätzlich alle 50 ms nach.
+   reagiert auf Signale und fragt zusätzlich alle 50 ms nach. Mit `Config::writeStats` misst er
+   die Dauer jedes erfolgreichen `writev()` (Mittelwert und Streuung nach Welford, dazu min/max).
 4. **`onSessionEnd`** hält das Ende fest (`m_stopAt = framesWritten()`), stoppt den Writer, der
    die ausstehenden Frames bis dorthin schreibt, meldet den Consumer ab, ruft `fsync` auf und
-   schließt die Datei. Das feste Ende ist nötig, weil bei `stopStreaming()` der Producer weiterläuft:
+   schließt die Datei. Mit `Config::writeStats` misst er `fsync` + `close` und schreibt die
+   Sidecar mit dem Block `writeStats` neu. Das feste Ende ist nötig, weil bei `stopStreaming()` der Producer weiterläuft:
    ein Writer, der bis zur aktuellen Spitze nachholt, würde nie fertig.
 
 Der Kopf einer mitten in der Sitzung geöffneten Datei ist der Sitzungs-Kopf; deren erster Frame
@@ -613,7 +617,22 @@ Enthält `format` (`"uc2rb"`), `formatVersion`, `layoutVersion`, `container`, `h
 `frameHeaderBytes`, `width`, `height`, `channels`, `dtype`, `frameBytes`, `slotCount`,
 `cameraId`, `comment`, `softwareVersion`, `startTimeUtc`, `startWallNs` und `startMonoNs`. Damit lässt sich eine
 Aufnahme identifizieren, ohne das Binärformat zu parsen. Scheitert das Schreiben, gibt es nur eine
-Warnung; die Aufnahme läuft weiter.
+Warnung; die Aufnahme läuft weiter. Geschrieben wird über eine temporäre Datei (`.json.tmp`) und
+`rename()`, damit ein Abbruch keine halbe Sidecar hinterlässt.
+
+Mit `Config::writeStats` (seit 2.3.0) wird die Sidecar beim Schließen der Datei neu geschrieben
+und bekommt zusätzlich den Block `writeStats`. Ohne den Schalter fehlt er; Leser sollten ihn als
+optional behandeln.
+
+| Feld in `writeStats` | Bedeutung |
+|---|---|
+| `framesSaved`, `framesDropped` | wie `framesSaved()`/`framesDropped()` |
+| `frameWriteMeanNs`, `frameWriteStdNs` | Mittelwert und Standardabweichung (Population) der Dauer eines `writev()` (Frame-Header + Payload), gerundet auf ns |
+| `frameWriteMinNs`, `frameWriteMaxNs` | kürzestes und längstes `writev()` |
+| `closeNs` | `fsync()` + `close()` am Ende: was der Page Cache noch nicht auf die Platte gebracht hatte |
+
+Ein `writev()` landet im Page Cache; kommt die Platte nicht nach, drosselt der Kernel genau diesen
+Aufruf. Die Zeiten zeigen also, ob der Writer mithält, nicht die reine Plattenlatenz.
 
 ---
 
@@ -707,11 +726,11 @@ beschreibt jeweils das tatsächliche Verhalten.
 
 | Stelle im Header | Kommentar | Tatsächliches Verhalten |
 |---|---|---|
-| `addSink()` [L522](../core/include/UC2_RingBuff.h#L529) | „Ownership of ops.ctx passes to the buffer“ | Nur wenn `destroy` gesetzt ist. Der eingebaute Streamer hat `destroy = nullptr` und gehört dem Puffer über `m_stream`. |
-| `abortWrite()` [L556](../core/include/UC2_RingBuff.h#L563) | „The write cursor is rolled back“ | `writeSequence` wird in `beginWrite()` gar nicht erhöht, also gibt es nichts zurückzurollen; das Ergebnis ist dasselbe. Nicht erwähnt: Der vorherige Frame im Slot ist danach verloren. |
-| `UC2_SinkOps` [L282](../core/include/UC2_RingBuff.h#L289) | Streamer „only records the sequence number“ | `frameThunk` weckt nur den Writer-Thread; die Sequenz führt der Writer selbst mit (`m_cursor`). |
-| `UC2_SessionHeader` [L131](../core/include/UC2_RingBuff.h#L138) | „Written once at configure() time“ | `startWallNs`/`startMonoNs` werden bei jedem `startRecording()` neu gesetzt. |
-| `UC2_FrameHeader::sequence` [L163](../core/include/UC2_RingBuff.h#L170) | „0-based and gap-free“ | Im Ring stimmt das. In der Container-Datei kann es Lücken geben (siehe [§8](#datei-layout-uc2rb)). |
+| `addSink()` [L530](../core/include/UC2_RingBuff.h#L530) | „Ownership of ops.ctx passes to the buffer“ | Nur wenn `destroy` gesetzt ist. Der eingebaute Streamer hat `destroy = nullptr` und gehört dem Puffer über `m_stream`. |
+| `abortWrite()` [L564](../core/include/UC2_RingBuff.h#L564) | „The write cursor is rolled back“ | `writeSequence` wird in `beginWrite()` gar nicht erhöht, also gibt es nichts zurückzurollen; das Ergebnis ist dasselbe. Nicht erwähnt: Der vorherige Frame im Slot ist danach verloren. |
+| `UC2_SinkOps` [L289](../core/include/UC2_RingBuff.h#L289) | Streamer „only records the sequence number“ | `frameThunk` weckt nur den Writer-Thread; die Sequenz führt der Writer selbst mit (`m_cursor`). |
+| `UC2_SessionHeader` [L138](../core/include/UC2_RingBuff.h#L138) | „Written once at configure() time“ | `startWallNs`/`startMonoNs` werden bei jedem `startRecording()` neu gesetzt. |
+| `UC2_FrameHeader::sequence` [L170](../core/include/UC2_RingBuff.h#L170) | „0-based and gap-free“ | Im Ring stimmt das. In der Container-Datei kann es Lücken geben (siehe [§8](#datei-layout-uc2rb)). |
 
 ---
 

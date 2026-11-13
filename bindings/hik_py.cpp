@@ -301,15 +301,18 @@ void bindCameraApi(py::class_<Cam, Holder>& cls)
 
         .def("set_buffer_config",
              [](Cam& c, uint32_t slot_count, const std::string& storage_path,
-                const std::string& comment) {
+                const std::string& comment, bool write_stats) {
                  hik::CameraBase::BufferConfig cfg;
                  cfg.slotCount   = slot_count;
                  cfg.storagePath = storage_path;
                  cfg.comment     = comment;
+                 cfg.writeStats  = write_stats;
                  py::gil_scoped_release release;
                  c.setBufferConfig(cfg);
              },
-             py::arg("slot_count"), py::arg("storage_path"), py::arg("comment"))
+             py::arg("slot_count"), py::arg("storage_path"), py::arg("comment"),
+             py::arg("write_stats") = false,
+             "Buffer settings for the next start(); write_stats: time every frame write to disk.")
         .def("start", &Cam::start, GilFree())
         .def("stop", &Cam::stop, GilFree())
         .def("close", &Cam::close, GilFree())

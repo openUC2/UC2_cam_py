@@ -6,6 +6,34 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-14
+
+### Added
+
+- **Write statistics on request.** `Camera.start(write_stats=True)` has the disk writer time
+  every image it writes (the one `writev()` of frame header plus pixels) and the final
+  `fsync()`. When a recording file is closed, its `.json` sidecar gets a `"writeStats"` block:
+  `framesSaved`, `framesDropped`, `frameWriteMeanNs`, `frameWriteStdNs`, `frameWriteMinNs`,
+  `frameWriteMaxNs`, `closeNs`. Without the switch nothing is timed and the sidecar is as
+  before. C++: `RingBuffer::Config::writeStats`, `CameraBase::BufferConfig::writeStats`,
+  `FileStreamSink::writeStats()`.
+- `Analysis/MeasureSaveTime.py`: records from the first connected HikRobot camera and prints
+  mean, std, min and max of the write time and the readout time per image, the frame interval,
+  the final `fsync()` and the throughput. Settings (debug window, buffer size, target file,
+  number of images) at the top of the script or on the command line.
+
+### Changed
+
+- The sidecar is written via a temporary file and `rename()`, so an interrupted write never
+  leaves half a sidecar.
+- IPC protocol 3: `SetBufferConfig` carries the write-statistics flag. Camera process and
+  package always come from the same build (checked at start), so nothing changes for users.
+
+### Fixed
+
+- `Docs/RingBuff_REF.md`: the visible line numbers of the source links had not been updated
+  with their targets in 2.2.0.
+
 ## [2.2.0] - 2026-11-13
 
 ### Added

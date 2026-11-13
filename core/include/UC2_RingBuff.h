@@ -362,6 +362,7 @@ public:
         FullPolicy  policy        = FullPolicy::Overwrite;  ///< behaviour when the next slot is unread
         uint32_t    waitTimeoutMs = 1000;             ///< Wait-mode gate timeout before overwriting anyway
         bool        sharedMemory  = false;            ///< region in a sealed memfd that another process can attach() to (Linux)
+        bool        writeStats    = false;            ///< disk streamer times every frame write; see FileStreamSink::WriteStats
     };
 
     /// Producer-side claim on one slot.
@@ -782,9 +783,25 @@ private:
 /// dedicated writer thread pulls the payload out of the ring as a registered
 /// consumer and hands header plus payload to `writev()` in a single syscall, so
 /// the camera thread never touches the file system and no staging copy is made.
+///
+/// With RingBuffer::Config::writeStats the writer also times every `writev()`
+/// and the final `fsync()` + `close()`, and rewrites the sidecar with a
+/// `"writeStats"` block when the file is closed.
 class FileStreamSink
 {
 public:
+    /// Write timing of one container file (RingBuffer::Config::writeStats).
+    struct WriteStats
+    {
+        uint64_t framesSaved   = 0;    ///< frames appended (the ones timed)
+        uint64_t framesDropped = 0;    ///< frames recycled before or while they were saved
+        double   meanNs        = 0.0;  ///< mean duration of one frame's writev()
+        double   stdNs         = 0.0;  ///< its standard deviation (population)
+        int64_t  minNs         = 0;    ///< shortest frame write
+        int64_t  maxNs         = 0;    ///< longest frame write
+        int64_t  closeNs       = 0;    ///< fsync() + close() at the end
+    };
+
     /// @param owner    ring buffer to pull frames from; must outlive the sink.
     /// @param dirPath  directory to create the container file in.
     FileStreamSink(RingBuffer& owner, const std::string& dirPath);
@@ -801,6 +818,9 @@ public:
     uint64_t    framesSaved() const;  ///< frames appended to the container
     uint64_t    framesDropped() const;///< frames recycled before they could be saved
     bool        hasError() const;     ///< a write or open failed
+    /// @return the write timing of the last closed file; all zero without
+    ///         RingBuffer::Config::writeStats or before the first file was closed.
+    WriteStats  writeStats() const;
 
 private:
     friend class RingBuffer;   // drives the session hooks of its built-in streamer directly
@@ -816,7 +836,9 @@ private:
     void onFrame();
     void onSessionEnd();
     void writerLoop();
-    bool writeSidecar(const UC2_SessionHeader& header) const;
+    /// Write `<file>.json` (via a temporary file and rename()); with @p stats
+    /// also the "writeStats" block.
+    bool writeSidecar(const UC2_SessionHeader& header, const WriteStats* stats = nullptr) const;
 
     RingBuffer&           m_owner;
     std::string           m_dirPath;
@@ -834,6 +856,17 @@ private:
     std::atomic<uint64_t> m_saved;
     std::atomic<uint64_t> m_dropped;
     std::atomic<bool>     m_error;
+
+    // Write timing (Config::writeStats). Fixed per file in onSessionStart();
+    // the running sums belong to the writer thread until it has been joined.
+    bool                  m_timed = false;
+    UC2_SessionHeader     m_header{};          ///< copy for the sidecar rewritten at the end
+    uint64_t              m_writes   = 0;      ///< timed frame writes (Welford)
+    double                m_writeMean = 0.0;
+    double                m_writeM2   = 0.0;
+    int64_t               m_writeMin  = 0;
+    int64_t               m_writeMax  = 0;
+    WriteStats            m_lastStats;         ///< of the last closed file, under m_mtx
 };
 
 } // namespace hik

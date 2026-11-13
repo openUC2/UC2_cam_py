@@ -103,6 +103,7 @@ T field(F get, const char* what)
 uint32_t u32(Message& m, const char* what) { return field<uint32_t>([&m](uint32_t& v) { return m.getU32(v); }, what); }
 int64_t  i64(Message& m, const char* what) { return field<int64_t>([&m](int64_t& v) { return m.getI64(v); }, what); }
 double   f64(Message& m, const char* what) { return field<double>([&m](double& v) { return m.getF64(v); }, what); }
+bool     flag(Message& m, const char* what) { return field<bool>([&m](bool& v) { return m.getFlag(v); }, what); }
 std::string str(Message& m, const char* what)
 {
     return field<std::string>([&m](std::string& v) { return m.getStr(v); }, what);
@@ -478,6 +479,7 @@ bool Worker::handle(Message& req)
         c.slotCount    = u32(req, "slot count");
         c.storagePath  = str(req, "storage path");
         c.comment      = str(req, "comment");
+        c.writeStats   = flag(req, "write stats");
         c.sharedMemory = true;   // the application reads the ring from this process
         cam().setBufferConfig(c);
         reply(req, [](Message&) {});

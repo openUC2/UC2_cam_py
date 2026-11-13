@@ -557,6 +557,28 @@ TEST_CASE("waitForImage returns at once when the camera process is killed during
     CHECK(cam->isLost());
 }
 
+TEST_CASE("write statistics reach the sidecar through the camera process", "[worker]")
+{
+    TempDir dir;
+    std::unique_ptr<RemoteCamera> cam = openSim();
+    CameraBase::BufferConfig cfg = buffer(8, dir.path.string());
+    cfg.writeStats = true;   // travels in SetBufferConfig (protocol 3)
+    cam->setBufferConfig(cfg);
+    CHECK(cam->bufferConfig().writeStats);
+    REQUIRE(cam->start());
+    REQUIRE(cam->ring()->waitForFrame(4, 5000));
+    const std::string file = cam->recordingFile();
+    REQUIRE_FALSE(file.empty());
+    cam->stop();
+
+    std::ifstream in(fs::path(file).replace_extension(".json").string());
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(text.find("\"writeStats\": {") != std::string::npos);
+    CHECK(text.find("\"framesSaved\": ") != std::string::npos);
+    CHECK(text.find("\"frameWriteMeanNs\": ") != std::string::npos);
+    cam->close();
+}
+
 TEST_CASE("the log messages of the camera process carry its source tag", "[worker]")
 {
     struct Seen
@@ -602,7 +624,7 @@ TEST_CASE("the camera process ends cleanly when the application goes away", "[wo
     w.openSim();
 
     Message cfg = w.request(Op::SetBufferConfig);
-    cfg.putU32(4).putStr(dir.path.string()).putStr("raw");
+    cfg.putU32(4).putStr(dir.path.string()).putStr("raw").putFlag(false);
     w.call(cfg);
     Message start = w.call(w.request(Op::Start));
     uint32_t err = 99;

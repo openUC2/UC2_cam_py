@@ -718,7 +718,7 @@ void RemoteCamera::setBufferConfig(const CameraBase::BufferConfig& cfg)
         m_cfg = cfg;
     }
     Message req = newRequest(Op::SetBufferConfig);
-    req.putU32(cfg.slotCount).putStr(cfg.storagePath).putStr(cfg.comment);
+    req.putU32(cfg.slotCount).putStr(cfg.storagePath).putStr(cfg.comment).putFlag(cfg.writeStats);
     Reply r;
     callLogged(req, r, kFastMs);
 }
