@@ -596,7 +596,7 @@ TEST_CASE("without writeStats the sidecar has no write statistics", "[ring][stre
     CHECK(rb.streamFramesSaved() == 5);
     const std::string text = slurp(sidecarOf(path));
     CHECK(text.find("\"startMonoNs\"") != std::string::npos);
-    CHECK(text.find("writeStats") == std::string::npos);   // as before 2.3.0
+    CHECK(text.find("writeStats") == std::string::npos);   // as before 2.2.1
     CHECK_FALSE(std::filesystem::exists(sidecarOf(path) + ".tmp"));
 }
 

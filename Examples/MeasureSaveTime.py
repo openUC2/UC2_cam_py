@@ -1,7 +1,7 @@
 """How long does writing one image to disk take - and reading it out of the camera?
 
-    uv run python Analysis/MeasureSaveTime.py            # the defaults below
-    uv run python Analysis/MeasureSaveTime.py --help     # all options
+    uv run python Examples/MeasureSaveTime.py            # the defaults below
+    uv run python Examples/MeasureSaveTime.py --help     # all options
 
 Opens the first connected HikRobot camera, records NUM_IMAGES images to disk with
 the package's own disk writer (``start(write_stats=True)``) and prints mean, std,
@@ -37,7 +37,7 @@ from uc2_cam_py import _uc2rb
 
 DEBUG_WINDOW = False                                        # live view while recording
 BUFFER_SIZE = 20                                            # slots in the ring buffer
-OUTPUT_FILE = Path.cwd() / "Analysis" / "SampleData.uc2rb"  # the recording (+ .json next to it)
+OUTPUT_FILE = Path.cwd() / "Examples" / "SampleData.uc2rb"  # the recording (+ .json next to it)
 NUM_IMAGES = 100                                            # images to record
 FRAME_RATE = None                                           # images/s; None: leave the camera's setting
 

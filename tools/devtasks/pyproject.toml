@@ -11,7 +11,7 @@
 name = "uc2-cam-py-devtasks"
 version = "0.1.0"
 description = "Developer commands (uv run main | py_tests | c_tests | all_tests) for uc2_cam_py."
-requires-python = "==3.12.*"
+requires-python = "==3.13.*"
 dependencies = []
 
 [project.scripts]

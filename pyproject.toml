@@ -8,7 +8,7 @@ name = "uc2_cam_py"
 dynamic = ["version"]
 description = "Python bindings for the MVS / HikRobot camera tool to be used in the UC2 ecosystem."
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = "==3.13.*"
 license = { text = "MIT" }
 authors = [{ name = "Christian Karras", email = "christian-karras@web.de" }]
 dependencies = ["numpy>=1.21", "tifffile>=2023.1.23"]   # tifffile: OME-TIFF export (uc2_cam_py.exporter)
@@ -38,7 +38,7 @@ input = "VERSION"
 regex = '(?P<value>\d+\.\d+\.\d+)'
 
 [tool.ruff]
-# target-version follows requires-python (3.12).
+# target-version follows requires-python (3.13).
 line-length = 120
 
 [tool.ruff.lint]

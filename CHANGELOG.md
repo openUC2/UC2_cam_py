@@ -6,7 +6,13 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
 
 ## [Unreleased]
 
-## [2.3.0] - 2026-11-14
+### Changed
+
+- **Python 3.13** instead of 3.12: `requires-python = "==3.13.*"` (also `.python-version`, the
+  developer tools and the CMake presets). An application that embeds the package needs Python
+  3.13 now. The dependencies are unchanged (numpy 2.5.1, tifffile, pybind11 3.0.4).
+
+## [2.2.1] - 2026-11-14
 
 ### Added
 
@@ -17,7 +23,7 @@ All notable changes to `uc2_cam_py` are recorded here. The format follows
   `frameWriteMaxNs`, `closeNs`. Without the switch nothing is timed and the sidecar is as
   before. C++: `RingBuffer::Config::writeStats`, `CameraBase::BufferConfig::writeStats`,
   `FileStreamSink::writeStats()`.
-- `Analysis/MeasureSaveTime.py`: records from the first connected HikRobot camera and prints
+- `Examples/MeasureSaveTime.py`: records from the first connected HikRobot camera and prints
   mean, std, min and max of the write time and the readout time per image, the frame interval,
   the final `fsync()` and the throughput. Settings (debug window, buffer size, target file,
   number of images) at the top of the script or on the command line.

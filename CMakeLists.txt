@@ -53,7 +53,7 @@ if (HIK_BUILD_PYTHON)
     # scikit-build-core puts pybind11 on CMAKE_PREFIX_PATH by itself; a plain
     # IDE configure does not, so ask the interpreter where its pybind11 lives.
     if(NOT DEFINED SKBUILD AND NOT DEFINED pybind11_DIR)
-        find_package(Python 3.12 COMPONENTS Interpreter QUIET)
+        find_package(Python 3.13 COMPONENTS Interpreter QUIET)
         if(Python_Interpreter_FOUND)
             execute_process(
                 COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir

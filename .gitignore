@@ -9,6 +9,9 @@ callgrind.out.*
 cachegrind.out.*
 vgcore.*
 
+# claude (for now)
+.claude/
+
 # Python / uv
 .venv/
 __pycache__/
@@ -37,6 +40,6 @@ External/hik/*
 !External/hik/README.md
 
 
-# Recordings, and the sample data of Analysis/MeasureSaveTime.py (default target)
+# Recordings, and the sample data of Examples/MeasureSaveTime.py (default target)
 *.uc2rb
-Analysis/SampleData.json
+Examples/SampleData.json

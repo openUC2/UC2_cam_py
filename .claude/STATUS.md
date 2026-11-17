@@ -1,13 +1,16 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-11-14 · Branch `main` · HEAD `2785fbc` (2.2.0 und `FableEval.md`, ein Commit,
-gepusht). Tags `v2.1.1` (`280ad7b`), `v2.1.2` (`367fe95`) und `v2.2.0` (`2785fbc`) liegen auf
-`main`.
-**Nächster Schritt:** Version 2.3.0 (Schreibstatistik und `Analysis/MeasureSaveTime.py`,
-oberster Eintrag unten) ist umgesetzt, aber nicht committet; Commit und Tag `v2.3.0` entscheidet
-der Nutzer. Offen bleiben §11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die
-acht Befunde der Bewertung [FableEval.md](FableEval.md).
-**Letzte Arbeitsschritte:** Version 2.3.0: `start(write_stats=True)`, Schreibstatistik in der
+**Stand:** 2026-11-17 · Branch `main` · HEAD `e303108` (gepusht). `VERSION` = 2.2.1.
+Tags: `v2.1.1` (`280ad7b`), `v2.1.2` (`367fe95`), `v2.2.0` (`2785fbc`). **`v2.2.1` zeigt
+ebenfalls auf `2785fbc`** (dort `VERSION` 2.2.0, ohne Schreibstatistik); die Schreibstatistik
+kam erst mit `5c018c3` + `e303108`. Ob der Tag verschoben wird, entscheidet der Nutzer.
+**Nächster Schritt:** Die Umstellung auf Python 3.13 (oberster Eintrag unten) ist umgesetzt,
+aber nicht committet. Die Geschwindigkeitsmessung (`Examples/MeasureSaveTime.py`) nimmt der
+Nutzer später wieder auf; offen sind dort lange Läufe über die Dirty-Grenze und der Pi 5.
+Offen bleiben §11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die acht Befunde
+der Bewertung [FableEval.md](FableEval.md).
+**Letzte Arbeitsschritte:** Python 3.12 → 3.13, dazu die Altlasten vom Verschieben des
+Messskripts nach `Examples/`. Davor 2.2.1: `start(write_stats=True)`, Schreibstatistik in der
 Sidecar, Messskript. Davor 2.2.0: `wait_for_image()` und `set_image_callback()`, dazu die zwei
 Wartefehler behoben. Davor die Bewertung des Pakets in `FableEval.md` (nur Dokument). Davor der
 ARM-Lauf auf dem Pi 5, abgeschlossen mit 2.1.2 (§11.2 Punkt 6). Davor
@@ -23,9 +26,57 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
-### Schreibstatistik auf Wunsch und `Analysis/MeasureSaveTime.py` — Version 2.3.0 — 2026-11-14
+### Python 3.12 → 3.13, Altlasten vom Verschieben des Messskripts — 2026-11-17
 
 **Implementiert:** ja · **Committet:** nein
+
+- **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-17.
+- **Entscheidungen des Nutzers:**
+  - Keine neue Version; `VERSION` bleibt 2.2.1, im CHANGELOG steht die Umstellung unter
+    `[Unreleased]`. Ich hatte 3.0.0 empfohlen, weil eine Anwendung unter 3.12 das Paket nicht
+    mehr installieren kann.
+  - Die Altlasten werden mit erledigt.
+- **Python 3.13** (`requires-python = "==3.13.*"`):
+  - `.python-version`, `pyproject.toml` (plus Ruff-Kommentar), `tools/devtasks/pyproject.toml`.
+  - `CMakeLists.txt` (`find_package(Python 3.13 …)` beim IDE-Configure),
+    `CMakePresets.json` (`pybind11_DIR` auf `python3.13`).
+  - `uv.lock` neu aufgelöst. Die Versionen sind gleich geblieben; nur die numpy-Wheels sind
+    jetzt `cp313`.
+  - README (Voraussetzungen, `uv sync`, Debug-Abschnitt mit `cpython-313`), ARM-Checkliste §2
+    (Trixie bringt 3.13 mit, unter Bookworm lädt uv).
+  - Umgebung: `uv sync` hat `.venv` mit 3.13.13 neu angelegt; danach `uv pip install -e .
+    --no-build-isolation` und `cmake --preset debug --fresh` (der Cache hielt noch die Header
+    von 3.12). profile/asan/tsan bauen kein Python-Modul.
+  - Der alte Baum `build/cp312-cp312-linux_x86_64` steht noch und kann weg.
+  - Kein in 3.13 entferntes Modul wird benutzt. Ruff meldet mit dem neuen `target-version` nichts.
+  - Bewusst belassen: historische Einträge hier (`cp312`, „3.12-Syntax“ von 2026-10-20) und
+    `FableEval.md` (Bewertung von 2026-11-13).
+- **Altlasten:** Der Nutzer hatte `Analysis/MeasureSaveTime.py` nach `Examples/` verschoben,
+  `Analysis/` gelöscht und die Version 2.3.0 als 2.2.1 herausgebracht. Nachgezogen:
+  - Kopf und Standardziel des Skripts (`CWD/Examples/SampleData.uc2rb`).
+  - `tests/test_measure_save_time.py`; der Pfad, das Standardziel und der Testname.
+  - `.gitignore` (`Examples/SampleData.json`). Die Zeile `.claude/` des Nutzers bleibt
+    unverändert und uncommittet. Sie ignoriert nur neue Dateien; die schon versionierten unter
+    `.claude/` bleiben versioniert.
+  - README (Baum, Absatz, Aufrufe).
+  - Schnittstellen-Doku (Version 2.2.1, §7.5, Link), `RingBuff_REF.md` („seit 2.2.1“),
+    ein Testkommentar.
+  - CHANGELOG `[2.3.0]` → `[2.2.1]`.
+- **Verifiziert (x86, GCC 16.2.1, ohne angeschlossene Kamera):**
+  - `uv run all_tests`: C++ 156/156, Python 290 passed / 26 skipped (Hardware), unter
+    „Python 3.13.13, pytest-9.1.1“; keine Warnungen.
+  - Das Paket meldet 2.2.1; `_hik.cpython-313-x86_64-linux-gnu.so`.
+  - `uvx ruff check python/ tests/ tools/ Examples/`: sauber.
+  - `uv run python Examples/MeasureSaveTime.py --simulated --images 10` schreibt nach
+    `./Examples/SampleData.uc2rb`, Git ignoriert es; danach gelöscht.
+  - **Nicht geprüft:** Hardware-Tests (keine Kamera angeschlossen), ASan/TSan (nicht nötig, kein
+    C++ geändert), Pi 5.
+
+### Schreibstatistik auf Wunsch und Messskript — Version 2.2.1 (geplant als 2.3.0) — 2026-11-14
+
+**Implementiert:** ja · **Committet:** ja (`5c018c3` + `e303108`; der Nutzer hat die Version
+auf 2.2.1 gesetzt und das Skript nach `Examples/` verschoben). Der Tag `v2.2.1` liegt
+allerdings auf `2785fbc` (siehe Kopf).
 
 - **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-14 (überschreibt den
   Plan von 2.2.0).
@@ -1074,7 +1125,7 @@ Examples/HikStandalone.cpp ─→ CaptureApp ─→ MvsCamera   (Diagnose; auch 
 - Alles muss unter `-Wall -Wextra` warnungsfrei übersetzen. Das ist der Normalzustand,
   kein Ziel.
 - Fehler werden als `bool`-Rückgabe mit Out-Parametern gemeldet, nicht über Exceptions.
-- **Python:** 3.12-Syntax (`X | None`, `list[...]`, `Self`), keine `typing.Optional`/`List`.
+- **Python:** 3.13 (seit 2026-11-17, vorher 3.12); Syntax wie bisher (`X | None`, `list[...]`, `Self`), keine `typing.Optional`/`List`.
   `uvx ruff check python/ tests/` muss sauber sein; Regeln in `pyproject.toml` `[tool.ruff]`.
 
 ---
@@ -1137,7 +1188,7 @@ uv pip install -e . --no-build-isolation
 uv run py_tests -q -m "not hardware"                     # ohne Kamera
 uv run py_tests -q -m hardware                           # dieselben Fälle an der HikRobot-Kamera
 UC2_DISPLAY_SECONDS=30 uv run py_tests -m display        # Live-Anzeige im Debugfenster
-uvx ruff check python/ tests/ tools/ Examples/ Analysis/ # Lint, Konfiguration in pyproject.toml
+uvx ruff check python/ tests/ tools/ Examples/          # Lint, Konfiguration in pyproject.toml
 
 # Manueller Ring-Buffer-Test ohne Kamera (nur Top-Level-Build): 20 simulierte Mono16-Frames,
 # Analyse- und Anzeige-Thread, Disk-Streaming. Endet, wenn das Vorschaufenster geschlossen wird.

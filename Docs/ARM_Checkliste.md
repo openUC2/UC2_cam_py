@@ -59,8 +59,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh     # danach eine neue Shell öf
 uv --version
 ```
 
-- **Python:** Welche Version das System mitbringt, spielt keine Rolle (Bookworm 3.11, Trixie
-  3.13). Das Projekt braucht 3.12 (`.python-version`), und `uv` lädt diese Version in §4 selbst.
+- **Python:** Das Projekt braucht 3.13 (`.python-version`). Trixie bringt 3.13 schon mit; unter
+  Bookworm (3.11) lädt `uv` die Version in §4 selbst.
 - **Optional, für §6 und §8:** `sudo apt install stress-ng valgrind`.
 
 ## 3. Quellcode und MVS-SDK

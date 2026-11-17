@@ -27,7 +27,7 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "HIK_BUILD_PYTHON": "ON",
         "Python_EXECUTABLE": "${sourceDir}/.venv/bin/python",
-        "pybind11_DIR": "${sourceDir}/.venv/lib/python3.12/site-packages/pybind11/share/cmake/pybind11"
+        "pybind11_DIR": "${sourceDir}/.venv/lib/python3.13/site-packages/pybind11/share/cmake/pybind11"
       },
       "environment": {
         "VIRTUAL_ENV": "${sourceDir}/.venv",

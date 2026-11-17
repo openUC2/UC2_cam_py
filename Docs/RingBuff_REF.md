@@ -415,7 +415,7 @@ Kamera bekannt ist.
 | `policy` | `FullPolicy` | `Overwrite` | Verhalten bei vollem Ring |
 | `waitTimeoutMs` | `uint32_t` | 1000 | Timeout im Wait-Modus, danach wird überschrieben |
 | `sharedMemory` | `bool` | `false` | Region in einem versiegelten memfd, den ein anderer Prozess mit `attach()` abbilden kann (nur Linux) |
-| `writeStats` | `bool` | `false` | Der Disk-Streamer misst jedes `writev()` und das abschließende `fsync()`/`close()`; die Sidecar bekommt beim Schließen den Block `writeStats` (§8). Seit 2.3.0 |
+| `writeStats` | `bool` | `false` | Der Disk-Streamer misst jedes `writev()` und das abschließende `fsync()`/`close()`; die Sidecar bekommt beim Schließen den Block `writeStats` (§8). Seit 2.2.1 |
 
 ### 7.3 `RingBuffer::WriteHandle` — [L373](../core/include/UC2_RingBuff.h#L373)
 
@@ -565,7 +565,7 @@ nacheinander mehrere Dateien öffnen und schließen.
 | `uint64_t framesSaved()` | Angehängte Frames |
 | `uint64_t framesDropped()` | Verlorene oder zerrissene Frames |
 | `bool hasError()` | Ein Öffnen oder Schreiben ist fehlgeschlagen |
-| `WriteStats writeStats()` | Schreibzeiten der zuletzt geschlossenen Datei (seit 2.3.0); alles 0 ohne `Config::writeStats` oder bevor eine Datei geschlossen wurde. Felder: `framesSaved`, `framesDropped`, `meanNs`, `stdNs` (Population), `minNs`, `maxNs` je `writev()` eines Frames, `closeNs` für `fsync()` + `close()` |
+| `WriteStats writeStats()` | Schreibzeiten der zuletzt geschlossenen Datei (seit 2.2.1); alles 0 ohne `Config::writeStats` oder bevor eine Datei geschlossen wurde. Felder: `framesSaved`, `framesDropped`, `meanNs`, `stdNs` (Population), `minNs`, `maxNs` je `writev()` eines Frames, `closeNs` für `fsync()` + `close()` |
 
 ### Ablauf
 
@@ -620,7 +620,7 @@ Aufnahme identifizieren, ohne das Binärformat zu parsen. Scheitert das Schreibe
 Warnung; die Aufnahme läuft weiter. Geschrieben wird über eine temporäre Datei (`.json.tmp`) und
 `rename()`, damit ein Abbruch keine halbe Sidecar hinterlässt.
 
-Mit `Config::writeStats` (seit 2.3.0) wird die Sidecar beim Schließen der Datei neu geschrieben
+Mit `Config::writeStats` (seit 2.2.1) wird die Sidecar beim Schließen der Datei neu geschrieben
 und bekommt zusätzlich den Block `writeStats`. Ohne den Schalter fehlt er; Leser sollten ihn als
 optional behandeln.
 

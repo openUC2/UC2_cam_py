@@ -1,4 +1,4 @@
-"""Analysis/MeasureSaveTime.py: disk write time and readout time per image."""
+"""Examples/MeasureSaveTime.py: disk write time and readout time per image."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from conftest import hik_camera_connected
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "Analysis" / "MeasureSaveTime.py"
+SCRIPT = ROOT / "Examples" / "MeasureSaveTime.py"
 #: Faster than the simulated camera's default 10 images/s.
 SIM = ("--simulated", "--frame-rate", "50")
 
@@ -41,9 +41,9 @@ def test_the_script_measures_with_the_simulated_camera(tmp_path: Path) -> None:
     check_report(run(*SIM, "--images", "20", "--output", str(output)), output, 20)
 
 
-def test_the_default_target_is_analysis_in_the_working_directory(tmp_path: Path) -> None:
+def test_the_default_target_is_examples_in_the_working_directory(tmp_path: Path) -> None:
     result = run(*SIM, "--images", "5", cwd=tmp_path)
-    check_report(result, tmp_path / "Analysis" / "SampleData.uc2rb", 5)
+    check_report(result, tmp_path / "Examples" / "SampleData.uc2rb", 5)
 
 
 def test_a_second_run_replaces_the_recording(tmp_path: Path) -> None:

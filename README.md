@@ -51,9 +51,8 @@ UC2_cam_py/
 │   ├── HikStandalone.cpp     #   HikStandAlone: terminal capture tool (needs a camera)
 │   ├── RingBuffExample.cpp   #   ring-buffer walkthrough with simulated frames
 │   ├── export_recordings.py  #   Python: export recordings as OME-TIFF and read them back
-│   └── newest_image.py       #   Python: the newest image by polling, waiting or callback
-├── Analysis/                 # measurement scripts
-│   └── MeasureSaveTime.py    #   disk write time and readout time per image (HikRobot camera)
+│   ├── newest_image.py       #   Python: the newest image by polling, waiting or callback
+│   └── MeasureSaveTime.py    #   Python: disk write time and readout time per image (HikRobot camera)
 ├── bindings/
 │   └── hik_py.cpp            # pybind11 module (_hik), low level
 ├── python/uc2_cam_py/        # the Python package
@@ -172,7 +171,7 @@ sequenceDiagram
   cameras and the network settings for GigE — HikRobot's scripts for that land in
   `External/hik/MVS/scripts/`.
 - A C++17 compiler, CMake ≥ 3.25, Ninja.
-- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.12
+- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.13
   (uv installs it automatically from `.python-version`). Runtime dependencies, installed with
   the package: numpy, and tifffile for the OME-TIFF export.
 - **For the preview window:** the X11 development headers. If they are missing:
@@ -209,7 +208,7 @@ cmake --preset debug && cmake --build --preset debug
 ## Build & run — Python (uv)
 
 ```bash
-uv sync                                        # creates .venv (Python 3.12), builds the extension
+uv sync                                        # creates .venv (Python 3.13), builds the extension
 uv run main                                    # pick a camera, live view (= python -m uc2_cam_py)
 uv run py_tests                                # pytest; extra arguments go to pytest
 uv run c_tests                                 # build + CTest of the debug preset; arguments go to ctest
@@ -275,13 +274,13 @@ uv run python Examples/newest_image.py
 ```
 
 How long writing each image to disk takes, and reading it out, is measured by
-`Analysis/MeasureSaveTime.py` with the first connected HikRobot camera. It records with
+`Examples/MeasureSaveTime.py` with the first connected HikRobot camera. It records with
 `start(write_stats=True)` and prints mean, std, min and max
 ([interface spec §7.5](Docs/UC2_cam_py_interface.md#75-recording)):
 
 ```bash
-uv run python Analysis/MeasureSaveTime.py             # 100 images to ./Analysis/SampleData.uc2rb
-uv run python Analysis/MeasureSaveTime.py --help      # images, buffer size, target, debug window
+uv run python Examples/MeasureSaveTime.py             # 100 images to ./Examples/SampleData.uc2rb
+uv run python Examples/MeasureSaveTime.py --help      # images, buffer size, target, debug window
 ```
 
 Live view without extra dependencies — `debug_window=True` is the only way to open a
@@ -465,7 +464,7 @@ or attach a second debugger to the camera process: `gdb -p <camera.process_id>`.
 **The catch: `cmake --build --preset debug` alone is not enough.** Python does not import
 the `_hik*.so` from the build tree. The editable install puts a meta path finder
 at `sys.meta_path[0]` that hard-maps `uc2_cam_py._hik` to a *copy* under
-`.venv/lib/python3.12/site-packages/uc2_cam_py/`, so `PYTHONPATH` cannot redirect
+`.venv/lib/python3.13/site-packages/uc2_cam_py/`, so `PYTHONPATH` cannot redirect
 it either. That copy is built `Release` and **stripped** — gdb finds no symbols
 in it.
 
@@ -482,7 +481,7 @@ This is what the `uc2_cam_py: Debug-Build (editable reinstall)` task in
 `Release`/`MinSizeRel`), so no extra flag is needed. Verify with:
 
 ```bash
-file .venv/lib/python3.12/site-packages/uc2_cam_py/_hik.cpython-312-*.so
+file .venv/lib/python3.13/site-packages/uc2_cam_py/_hik.cpython-313-*.so
 # want: "with debug_info, not stripped"
 ```
 

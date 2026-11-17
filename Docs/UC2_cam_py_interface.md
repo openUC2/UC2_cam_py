@@ -1,6 +1,6 @@
 # UC2_cam_py — Camera Interface
 
-Specification of the Python camera interface of `uc2_cam_py` (version 2.3.0). It is the
+Specification of the Python camera interface of `uc2_cam_py` (version 2.2.1). It is the
 consolidated form of the original interface draft: names are consistently `snake_case`,
 contradictions and gaps of the draft are resolved (see [§10](#10-changes-against-the-draft)),
 and everything marked *addition* goes beyond the draft.
@@ -300,7 +300,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   The camera thread never touches the file system.
 - **Dropped frames.** If the disk cannot keep up, frames are dropped from the file (counted),
   never from the camera.
-- **Write statistics** (*addition*, 2.3.0). With `start(write_stats=True)` the writer times
+- **Write statistics** (*addition*, 2.2.1). With `start(write_stats=True)` the writer times
   every image it writes, and when a file is closed its `.json` sidecar gets a `"writeStats"`
   block; without it the block is missing. All times are in ns:
 
@@ -314,7 +314,7 @@ All fields of `UC2_SessionHeader`; the same header starts every `.uc2rb` file.
   times therefore show whether the writer keeps up, not the bare disk latency. The setting
   applies to every file of the acquisition, also after a restart for `roi`/`binning` and when
   `store_image_data` is switched on later. Without `store_image_data` nothing is written, so
-  nothing is timed. [`Analysis/MeasureSaveTime.py`](../Analysis/MeasureSaveTime.py) prints these
+  nothing is timed. [`Examples/MeasureSaveTime.py`](../Examples/MeasureSaveTime.py) prints these
   values for a camera.
 - Format details: [RingBuff_REF.md](RingBuff_REF.md) §8.
 
