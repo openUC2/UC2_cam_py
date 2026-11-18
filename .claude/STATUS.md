@@ -1,16 +1,17 @@
 # STATUS — UC2_cam_py
 
-**Stand:** 2026-11-17 · Branch `main` · HEAD `e303108` (gepusht). `VERSION` = 2.2.1.
-Tags: `v2.1.1` (`280ad7b`), `v2.1.2` (`367fe95`), `v2.2.0` (`2785fbc`). **`v2.2.1` zeigt
-ebenfalls auf `2785fbc`** (dort `VERSION` 2.2.0, ohne Schreibstatistik); die Schreibstatistik
-kam erst mit `5c018c3` + `e303108`. Ob der Tag verschoben wird, entscheidet der Nutzer.
-**Nächster Schritt:** Die Umstellung auf Python 3.13 (oberster Eintrag unten) ist umgesetzt,
-aber nicht committet. Die Geschwindigkeitsmessung (`Examples/MeasureSaveTime.py`) nimmt der
+**Stand:** 2026-11-18 · Branch `main` · HEAD `174eaa6` (gepusht). `VERSION` = 2.3.0
+(uncommittet).
+Tags: `v2.1.1` (`280ad7b`), `v2.1.2` (`367fe95`), `v2.2.0` (`2785fbc`), `v2.2.1` (`e303108`,
+letzte Version für Python 3.12). Auf GitHub zeigt `v2.2.1` noch auf `2785fbc`, bis der Nutzer
+ihn mit `git push -f origin v2.2.1` nachzieht. `v2.3.0` folgt mit dem Versions-Commit.
+**Nächster Schritt:** Version 2.3.0 (oberster Eintrag unten) committen und taggen; das macht der
+Nutzer. Die Geschwindigkeitsmessung (`Examples/MeasureSaveTime.py`) nimmt der
 Nutzer später wieder auf; offen sind dort lange Läufe über die Dirty-Grenze und der Pi 5.
 Offen bleiben §11.2 Punkt 2 (PyCapsule-Hook), die Review-Befunde in §11.3 und die acht Befunde
 der Bewertung [FableEval.md](FableEval.md).
-**Letzte Arbeitsschritte:** Python 3.12 → 3.13, dazu die Altlasten vom Verschieben des
-Messskripts nach `Examples/`. Davor 2.2.1: `start(write_stats=True)`, Schreibstatistik in der
+**Letzte Arbeitsschritte:** Version 2.3.0 für Python 3.13. Davor Python 3.12 → 3.13, dazu die
+Altlasten vom Verschieben des Messskripts nach `Examples/`. Davor 2.2.1: `start(write_stats=True)`, Schreibstatistik in der
 Sidecar, Messskript. Davor 2.2.0: `wait_for_image()` und `set_image_callback()`, dazu die zwei
 Wartefehler behoben. Davor die Bewertung des Pakets in `FableEval.md` (nur Dokument). Davor der
 ARM-Lauf auf dem Pi 5, abgeschlossen mit 2.1.2 (§11.2 Punkt 6). Davor
@@ -26,15 +27,48 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 
 ## Umgesetzte Pläne (neueste zuerst)
 
+### Version 2.3.0 (Python 3.13), 2.2.1 bleibt die letzte 3.12-Version — 2026-11-18
+
+**Implementiert:** ja · **Committet:** nein (Befehle hat der Nutzer bekommen)
+
+- **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-18.
+- **Anlass:** Der Nutzer will den Wechsel auf 3.13 unter einer eigenen Version führen: 2.3.0.
+  2.2.1 soll die letzte Version für Python 3.12 sein.
+- **Ausgangslage:**
+  - `174eaa6` („chg:Set to PyVersion 3.13“, gepusht) braucht 3.13, trägt aber noch
+    `VERSION` 2.2.1. Deshalb kommt ein Versions-Commit obendrauf, kein Tag auf `174eaa6`.
+  - Ein `--amend` hätte einen Force-Push von `main` gebraucht.
+  - Den lokalen Tag `v2.2.1` hatte der Nutzer schon auf `e303108` gesetzt; auf GitHub lag er
+    noch auf `2785fbc`.
+- **Geändert:**
+  - `VERSION` 2.3.0.
+  - CHANGELOG `[Unreleased]` → `[2.3.0] - 2026-11-18`, mit „2.2.1 is the last version for
+    Python 3.12“.
+  - README (Voraussetzungen) und die Kopfzeile der Schnittstellen-Doku.
+- **Entscheidung des Nutzers:** `Analysis/SampleData.json` war mit `174eaa6` ins Repo
+  gekommen. Der Ordner `Analysis/` ist gelöscht, auch die ignorierte 230-MB-Aufnahme
+  `SampleData.uc2rb`. `git rm` ist in `settings.json` gesperrt; `git add -u` des Nutzers
+  nimmt die Löschung mit.
+- **Verifiziert:**
+  - Das Paket meldet 3.13.13 / 2.3.0, `uc2_cam_worker --version` 2.3.0.
+  - `uv run all_tests`: C++ 156/156, Python 290 passed / 26 skipped (keine Kamera
+    angeschlossen).
+- **Befehle für den Nutzer:**
+  - Commit: `git add -u`, `git commit`.
+  - Tag: `git tag -a v2.3.0 -m "uc2_cam_py 2.3.0"`.
+  - Push: `git push origin main v2.3.0`, `git push -f origin v2.2.1`.
+  - Andere Klone, z. B. auf dem Pi, brauchen danach `git fetch --tags --force`.
+
 ### Python 3.12 → 3.13, Altlasten vom Verschieben des Messskripts — 2026-11-17
 
-**Implementiert:** ja · **Committet:** nein
+**Implementiert:** ja · **Committet:** ja (`174eaa6`, vom Nutzer; mit ihm kam versehentlich
+`Analysis/SampleData.json` ins Repo, entfernt mit 2.3.0)
 
 - **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-17.
 - **Entscheidungen des Nutzers:**
-  - Keine neue Version; `VERSION` bleibt 2.2.1, im CHANGELOG steht die Umstellung unter
-    `[Unreleased]`. Ich hatte 3.0.0 empfohlen, weil eine Anwendung unter 3.12 das Paket nicht
-    mehr installieren kann.
+  - Zunächst keine neue Version (`[Unreleased]`); am 2026-11-18 hat der Nutzer sich für 2.3.0
+    entschieden (Eintrag darüber). Ich hatte 3.0.0 empfohlen, weil eine Anwendung unter 3.12
+    das Paket nicht mehr installieren kann.
   - Die Altlasten werden mit erledigt.
 - **Python 3.13** (`requires-python = "==3.13.*"`):
   - `.python-version`, `pyproject.toml` (plus Ruff-Kommentar), `tools/devtasks/pyproject.toml`.
@@ -75,8 +109,8 @@ Arbeitsstand. Vor nicht-trivialer Arbeit §1–§4 und §11 lesen.
 ### Schreibstatistik auf Wunsch und Messskript — Version 2.2.1 (geplant als 2.3.0) — 2026-11-14
 
 **Implementiert:** ja · **Committet:** ja (`5c018c3` + `e303108`; der Nutzer hat die Version
-auf 2.2.1 gesetzt und das Skript nach `Examples/` verschoben). Der Tag `v2.2.1` liegt
-allerdings auf `2785fbc` (siehe Kopf).
+auf 2.2.1 gesetzt und das Skript nach `Examples/` verschoben). Der Tag `v2.2.1` lag zuerst auf
+`2785fbc`; der Nutzer hat ihn auf `e303108` gesetzt (siehe Kopf).
 
 - **Plan:** `~/.claude/plans/vast-fluttering-crayon.md`, freigegeben 2026-11-14 (überschreibt den
   Plan von 2.2.0).

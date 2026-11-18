@@ -171,8 +171,9 @@ sequenceDiagram
   cameras and the network settings for GigE — HikRobot's scripts for that land in
   `External/hik/MVS/scripts/`.
 - A C++17 compiler, CMake ≥ 3.25, Ninja.
-- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.13
-  (uv installs it automatically from `.python-version`). Runtime dependencies, installed with
+- For the Python package: [uv](https://docs.astral.sh/uv/) and Python 3.13 (since 2.3.0;
+  2.2.1 is the last version for Python 3.12; uv installs it automatically from
+  `.python-version`). Runtime dependencies, installed with
   the package: numpy, and tifffile for the OME-TIFF export.
 - **For the preview window:** the X11 development headers. If they are missing:
 
